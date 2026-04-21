@@ -1,0 +1,19 @@
+{
+  "chat": {
+    "base_url": "http://localhost:8080/v1",
+    "api_key": "sk-...",
+    "model": "model_name"
+  },
+  "planner": {
+    "base_url": "http://localhost:8080/v1",
+    "api_key": "sk-...",
+    "model": "model_name",
+    "timeout_ms": null,
+    "max_retries": 0,
+    "temperature": 0.0,
+    "use_json_schema": null,
+    "schema_strict": null,
+    "compat_mode": "auto",
+    "runtime_mode": "react_loop"
+  }
+}

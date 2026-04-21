@@ -62,10 +62,16 @@ npm run build
 
 ### 4. 配置模型
 
-首次运行会自动生成根目录 `config.json`。你需要把其中的模型地址、API Key 和模型名改成可用值。当前配置文件包含两个部分：
+首次运行会自动生成根目录 `config.json`。现在仓库也提供了一个可提交的示例文件 `config.example.json`，建议先复制一份为 `config.json`，再把其中的模型地址、API Key 和模型名改成可用值。当前配置文件包含两个部分：
 
 - `chat`：用于聊天、分析文档和生成回答
 - `planner`：用于规划和执行文档修改
+
+推荐命令：
+
+```powershell
+Copy-Item config.example.json config.json
+```
 
 示例结构：
 
