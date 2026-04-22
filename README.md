@@ -37,6 +37,27 @@
 
 ## 快速开始
 
+### Windows 一键安装
+
+仓库根目录新增了 `install_windows.bat`，Windows 用户下载后可直接双击执行，或者在终端中运行：
+
+```powershell
+.\install_windows.bat
+```
+
+这个安装器会自动完成以下事项：
+
+- 创建项目本地虚拟环境 `.venv`
+- 安装 Python 核心依赖和 GUI 依赖
+- 安装并构建 `src/ts` 与 `src/frontend`
+- 若 `config.json` 不存在，则从 `config.example.json` 自动复制
+
+安装完成后，只需要修改 `config.json` 中的模型配置，再双击 `launch_gui.bat` 即可启动。若希望安装完成后立即尝试启动，可使用：
+
+```powershell
+.\install_windows.bat --launch
+```
+
 ### 1. 安装 Python 依赖
 
 ```powershell

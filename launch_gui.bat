@@ -1,9 +1,17 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 
 cd /d "%~dp0"
+set "VENV_PYTHON=%~dp0.venv\Scripts\python.exe"
 set "CONDA_ENV_NAME=Agent"
 set "CONDA_BASE="
+set "EXIT_CODE=0"
+
+if exist "%VENV_PYTHON%" (
+  "%VENV_PYTHON%" scripts\launch_gui.py
+  set "EXIT_CODE=%ERRORLEVEL%"
+  goto :finish
+)
 
 for /f "usebackq delims=" %%I in (`conda info --base 2^>nul`) do set "CONDA_BASE=%%I"
 
