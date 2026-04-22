@@ -15,6 +15,7 @@ from src.python.api.ts_agent_bridge import (
     attach_document,
     create_session,
     delete_session,
+    get_turn_run_status,
     get_session_state,
     list_sessions,
     submit_agent_turn,
@@ -152,6 +153,29 @@ class TsAgentBridgeCommandsTest(unittest.TestCase):
                 result = get_session_state("chat-main", options=options)
 
             self.assertEqual(result["session"]["turns"][0]["content"], "hi")
+
+    def test_get_turn_run_status_sends_query_command(self) -> None:
+        with self._tempdir() as tmp:
+            root = Path(tmp)
+            options = self._make_options(root)
+
+            def fake_run(*args, **kwargs):  # noqa: ANN001
+                cmd = args[0]
+                input_path = Path(cmd[3])
+                output_path = Path(cmd[5])
+                req_payload = json.loads(input_path.read_text(encoding="utf-8"))
+                self.assertEqual(req_payload["command"]["type"], "get_turn_run_status")
+                self.assertEqual(req_payload["command"]["sessionId"], "chat-main")
+                output_path.write_text(
+                    json.dumps({"turnRun": {"turnRunId": "turn-1", "sessionId": "chat-main", "status": "running"}}),
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(returncode=0, stderr="")
+
+            with patch("src.python.api.ts_agent_bridge.subprocess.run", side_effect=fake_run):
+                result = get_turn_run_status(session_id="chat-main", options=options)
+
+            self.assertEqual(result["turnRun"]["turnRunId"], "turn-1")
 
     def test_update_session_title_sends_patch_command(self) -> None:
         with self._tempdir() as tmp:

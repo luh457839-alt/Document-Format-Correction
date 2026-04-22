@@ -1,4 +1,4 @@
-import { ChatMessage, ChatSession, FrontendSessionState, ModelConfigPayload } from '../types';
+import { ChatMessage, ChatSession, FrontendSessionState, ModelConfigPayload, TurnJobSnapshot } from '../types';
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const payload = await response.json().catch(() => null);
@@ -82,6 +82,30 @@ export async function submitTurn(
   });
   const result = await parseJsonResponse<{ session: FrontendSessionState }>(response);
   return result.session;
+}
+
+export async function submitTurnAsync(
+  sessionId: string,
+  content: string
+): Promise<{ job: TurnJobSnapshot }> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages/async`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ content }),
+  });
+  return parseJsonResponse<{ job: TurnJobSnapshot }>(response);
+}
+
+export async function fetchMessageJob(
+  sessionId: string,
+  jobId: string
+): Promise<{ job: TurnJobSnapshot; session?: FrontendSessionState | null }> {
+  const response = await fetch(
+    `/api/sessions/${encodeURIComponent(sessionId)}/message-jobs/${encodeURIComponent(jobId)}`
+  );
+  return parseJsonResponse<{ job: TurnJobSnapshot; session?: FrontendSessionState | null }>(response);
 }
 
 export async function attachDocument(

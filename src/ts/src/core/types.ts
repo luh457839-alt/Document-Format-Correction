@@ -37,6 +37,11 @@ export interface PlannerModelConfig {
   baseUrl: string;
   model: string;
   timeoutMs?: number;
+  stepTimeoutMs?: number;
+  taskTimeoutMs?: number | null;
+  pythonToolTimeoutMs?: number;
+  maxTurns?: number;
+  syncRequestTimeoutMs?: number;
   maxRetries?: number;
   temperature?: number;
   useJsonSchema?: boolean;
@@ -89,7 +94,9 @@ export interface Operation {
   id: string;
   type: OperationType;
   targetNodeId?: string;
+  targetNodeIds?: string[];
   targetSelector?: NodeSelector;
+  sourceTargetSelector?: NodeSelector;
   payload: Record<string, unknown>;
 }
 
@@ -150,7 +157,7 @@ export interface ToolRegistry {
 }
 
 export interface Planner {
-  createPlan(goal: string, doc: DocumentIR): Promise<Plan>;
+  createPlan(goal: string, doc: DocumentIR, options?: { timeoutMs?: number }): Promise<Plan>;
 }
 
 export interface ReActTurnInput {
@@ -160,6 +167,7 @@ export interface ReActTurnInput {
   doc: DocumentIR;
   history: ReActTraceItem[];
   sessionContext?: ConversationMessage[];
+  requestTimeoutMs?: number;
 }
 
 export type ReActDecision =
@@ -231,6 +239,7 @@ export interface ExecutorOptions {
   dryRun?: boolean;
   maxConcurrentReadOnly?: number;
   defaultTimeoutMs?: number;
+  budgetDeadlineMs?: number;
   defaultRetryLimit?: number;
   retryBackoffMs?: number;
   confirmStep?: (step: PlanStep) => Promise<ConfirmationDecision>;

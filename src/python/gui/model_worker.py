@@ -23,7 +23,7 @@ class ModelCallWorker(QObject):
         enable_tools: bool = False,
         imported_doc: dict[str, Any] | None = None,
         task_id: str = "chat-main",
-        ts_agent_timeout_sec: float = 90.0,
+        ts_agent_timeout_sec: float | None = None,
     ):
         super().__init__()
         self.base_url = base_url

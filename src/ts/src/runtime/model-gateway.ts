@@ -1,4 +1,8 @@
 import { AgentError, asAppError } from "../core/errors.js";
+import {
+  buildModelResponseErrorMessage,
+  parseOpenAiCompatibleChatText
+} from "../core/model-response.js";
 import type { ChatModelConfig, ConversationMessage, PlannerModelConfig } from "../core/types.js";
 import {
   asCompatibleModelRequestError,
@@ -36,17 +40,24 @@ const TURN_DECISION_FIELDS = [
   "clarificationReason"
 ] as const;
 const TURN_DECISION_SYSTEM_PROMPT =
+  "你负责为文档格式助手判定单轮请求。请只返回 1 个 JSON 对象，不要输出其他文本。 " +
+  "对象必须且只能包含这些字段：mode、goal、requiresDocument、needsClarification、clarificationKind、clarificationReason，不要添加额外字段。 " +
+  "mode 只能是 chat、inspect、execute。goal 必须是去除首尾空白后的非空字符串，并且要描述本轮要执行的具体回复或文档任务。 " +
+  "requiresDocument 必须是 boolean；needsClarification 必须是 boolean；clarificationKind 只能是 none、selector_scope、heading_scope、paragraph_scope、semantic_anchor、other；clarificationReason 必须是字符串。 " +
+  "当 needsClarification=true 时，mode 必须为 chat，clarificationKind 不能为 none，clarificationReason 必须解释歧义；如果为了提出更好的追问需要查看附加文档结构，requiresDocument 可以为 true。 " +
+  "当 needsClarification=false 时，clarificationKind 必须为 none，clarificationReason 必须为空字符串。 " +
+  "明确的格式修改或编辑请求使用 mode=execute；明确的读取、总结、解释文档请求使用 mode=inspect；其他情况使用 mode=chat。 " +
+  "如果用户明确要求修改已附加文档，不要因为内部字段缺失就退回 chat，应输出 execute 或 needsClarification=true。 " +
+  "如果文档编辑请求因为目标范围可能有多种合理解释而存在风险，不要猜，改为 needsClarification=true。标题范围不清、段落锚点不明确，都属于这类情况。 " +
+  "如果最近的 assistant 消息里有以【需求澄清】开头的澄清问题，而当前用户回复是在选择或澄清该问题，就应把它转成已解决后的最终 goal，而不是再次追问。 " +
   "You route one user turn for a document-format assistant. Return exactly one JSON object and no other text. " +
   "The object must contain exactly these fields: mode, goal, requiresDocument, needsClarification, clarificationKind, clarificationReason. Do not add extra fields. " +
-  "mode must be one of chat, inspect, execute. " +
-  "goal must be a non-empty string after trimming and must describe the concrete reply or document task to perform. " +
+  "mode must be one of chat, inspect, execute. goal must be a non-empty string after trimming and must describe the concrete reply or document task to perform. " +
   "requiresDocument must be a boolean. needsClarification must be a boolean. clarificationKind must be one of none, selector_scope, heading_scope, paragraph_scope, semantic_anchor, other. clarificationReason must be a string. " +
   "When needsClarification=true, mode must be chat, clarificationKind must not be none, clarificationReason must explain the ambiguity, and requiresDocument may be true if you need the attached document structure to ask a better follow-up question. " +
-  "When needsClarification=false, clarificationKind must be none and clarificationReason must be an empty string. " +
-  "Use mode=execute for clear formatting or editing requests, mode=inspect for clear read/summarize/explain-document requests, otherwise mode=chat. " +
+  "When needsClarification=false, clarificationKind must be none and clarificationReason must be an empty string. Use mode=execute for clear formatting or editing requests, mode=inspect for clear read/summarize/explain-document requests, otherwise mode=chat. " +
   "If the user explicitly asks to modify an attached document, do not fall back to chat because of missing internal fields. output execute or needsClarification=true. " +
-  "If a document-editing request is risky because the target scope could mean multiple valid things, do not guess. Set needsClarification=true instead. " +
-  "Examples include 正文 vs numbered/bulleted list paragraphs, ambiguous heading ranges, or unclear paragraph anchors. " +
+  "If a document-editing request is risky because the target scope could mean multiple valid things, do not guess. Set needsClarification=true instead. Examples include ambiguous heading ranges, or unclear paragraph anchors. " +
   "If recent assistant turns include a clarification message prefixed with 【需求澄清】 and the current user reply selects or clarifies that question, convert it into the resolved final goal instead of asking again.";
 
 const CLARIFICATION_SYSTEM_PROMPT =
@@ -367,10 +378,20 @@ function summarizeObservationForReply(observation: PythonDocxObservationState): 
 }
 
 function extractContent(rawText: string): string {
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(rawText);
+    const result = parseOpenAiCompatibleChatText(rawText);
+    if (result.content === null) {
+      throw new AgentError({
+        code: "E_AGENT_MODEL_RESPONSE",
+        message: buildModelResponseErrorMessage("Model payload", result),
+        retryable: false
+      });
+    }
+    return result.content;
   } catch (err) {
+    if (err instanceof AgentError) {
+      throw err;
+    }
     throw new AgentError({
       code: "E_AGENT_MODEL_RESPONSE",
       message: `Model returned invalid envelope JSON: ${String(err)}`,
@@ -378,29 +399,6 @@ function extractContent(rawText: string): string {
       cause: err
     });
   }
-
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    !("choices" in parsed) ||
-    !Array.isArray((parsed as { choices?: unknown[] }).choices)
-  ) {
-    throw new AgentError({
-      code: "E_AGENT_MODEL_RESPONSE",
-      message: "Model payload is missing choices[].",
-      retryable: false
-    });
-  }
-
-  const content = (parsed as { choices: Array<{ message?: { content?: unknown } }> }).choices[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) {
-    throw new AgentError({
-      code: "E_AGENT_MODEL_RESPONSE",
-      message: "Model payload has empty message content.",
-      retryable: false
-    });
-  }
-  return content.trim();
 }
 
 export function parseTurnDecision(content: string): TurnDecision {
@@ -423,7 +421,7 @@ export function normalizeTurnDecision(candidate: unknown): TurnDecision {
     throw invalidTurnDecision("turn decision must be a JSON object");
   }
 
-  const raw = candidate as {
+  const raw = normalizeTurnDecisionCandidate(candidate as Record<string, unknown>) as {
     mode?: unknown;
     goal?: unknown;
     requiresDocument?: unknown;
@@ -436,7 +434,8 @@ export function normalizeTurnDecision(candidate: unknown): TurnDecision {
   if (extraKeys.length > 0) {
     throw invalidTurnDecision(`turn decision has unexpected fields: ${extraKeys.join(", ")}`);
   }
-  if (!isAgentTurnMode(raw.mode)) {
+  const mode = typeof raw.mode === "string" ? raw.mode.trim().toLowerCase() : raw.mode;
+  if (!isAgentTurnMode(mode)) {
     throw invalidTurnDecision(`turn decision mode must be ${AGENT_TURN_MODES.join(" | ")}`);
   }
 
@@ -444,31 +443,42 @@ export function normalizeTurnDecision(candidate: unknown): TurnDecision {
   if (!goal) {
     throw invalidTurnDecision("turn decision goal is required");
   }
-  if (typeof raw.requiresDocument !== "boolean") {
+  const normalizedRequiresDocument = normalizeBoolean(raw.requiresDocument);
+  if (raw.requiresDocument !== undefined && normalizedRequiresDocument === undefined) {
     throw invalidTurnDecision("turn decision requiresDocument must be boolean");
   }
-  if (typeof raw.needsClarification !== "boolean") {
+  const requiresDocument = normalizedRequiresDocument ?? (mode === "chat" ? false : true);
+  const normalizedClarificationKind = normalizeClarificationKind(raw.clarificationKind);
+  const clarificationReason = typeof raw.clarificationReason === "string" ? raw.clarificationReason.trim() : "";
+  const normalizedNeedsClarification = normalizeBoolean(raw.needsClarification);
+  if (raw.needsClarification !== undefined && normalizedNeedsClarification === undefined) {
     throw invalidTurnDecision("turn decision needsClarification must be boolean");
   }
-  if (!isClarificationKind(raw.clarificationKind)) {
-    throw invalidTurnDecision(`turn decision clarificationKind must be ${CLARIFICATION_KINDS.join(" | ")}`);
-  }
-  if (typeof raw.clarificationReason !== "string") {
+  const needsClarification =
+    normalizedNeedsClarification ??
+    (normalizedClarificationKind !== undefined && normalizedClarificationKind !== "none"
+      ? true
+      : clarificationReason.length > 0);
+  if (raw.clarificationReason !== undefined && typeof raw.clarificationReason !== "string") {
     throw invalidTurnDecision("turn decision clarificationReason must be a string");
   }
-  const clarificationReason = raw.clarificationReason.trim();
-  if (raw.needsClarification) {
-    if (raw.mode !== "chat") {
+  const clarificationKind =
+    normalizedClarificationKind ?? (needsClarification ? undefined : "none");
+  if (!isClarificationKind(clarificationKind)) {
+    throw invalidTurnDecision(`turn decision clarificationKind must be ${CLARIFICATION_KINDS.join(" | ")}`);
+  }
+  if (needsClarification) {
+    if (mode !== "chat") {
       throw invalidTurnDecision("turn decision needsClarification=true requires mode=chat");
     }
-    if (raw.clarificationKind === "none") {
+    if (clarificationKind === "none") {
       throw invalidTurnDecision("turn decision clarificationKind must not be none when needsClarification=true");
     }
     if (!clarificationReason) {
       throw invalidTurnDecision("turn decision clarificationReason is required when needsClarification=true");
     }
   } else {
-    if (raw.clarificationKind !== "none") {
+    if (clarificationKind !== "none") {
       throw invalidTurnDecision("turn decision clarificationKind must be none when needsClarification=false");
     }
     if (clarificationReason) {
@@ -477,13 +487,24 @@ export function normalizeTurnDecision(candidate: unknown): TurnDecision {
   }
 
   return {
-    mode: raw.mode,
+    mode,
     goal,
-    requiresDocument: raw.requiresDocument,
-    needsClarification: raw.needsClarification,
-    clarificationKind: raw.clarificationKind,
+    requiresDocument,
+    needsClarification,
+    clarificationKind,
     clarificationReason
   };
+}
+
+function normalizeTurnDecisionCandidate(candidate: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(candidate)) {
+    const canonicalKey = TURN_DECISION_ALIAS_MAP[key] ?? key;
+    if (!(canonicalKey in normalized)) {
+      normalized[canonicalKey] = value;
+    }
+  }
+  return normalized;
 }
 
 export function isAgentTurnMode(value: unknown): value is AgentTurnMode {
@@ -500,4 +521,41 @@ function invalidTurnDecision(message: string): AgentError {
     message,
     retryable: false
   });
+}
+
+const TURN_DECISION_ALIAS_MAP: Record<string, string> = {
+  requires_document: "requiresDocument",
+  needs_clarification: "needsClarification",
+  clarification_kind: "clarificationKind",
+  clarification_reason: "clarificationReason"
+};
+
+function normalizeBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number" && (value === 0 || value === 1)) {
+    return value === 1;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "0") {
+      return false;
+    }
+  }
+  return undefined;
+}
+
+function normalizeClarificationKind(value: unknown): ClarificationKind | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  return isClarificationKind(normalized) ? normalized : undefined;
 }

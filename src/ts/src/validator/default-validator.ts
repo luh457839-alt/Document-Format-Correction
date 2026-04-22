@@ -31,22 +31,17 @@ export class DefaultValidator implements Validator {
       if (!step.operation.payload || typeof step.operation.payload !== "object") {
         throw invalidPlan(`write_operation step '${step.id}' requires operation.payload.`);
       }
-      if (!step.operation.targetNodeId && !step.operation.targetSelector) {
+      if (!step.operation.targetNodeId && !step.operation.targetNodeIds?.length && !step.operation.targetSelector) {
         throw invalidPlan(
-          `write_operation step '${step.id}' requires operation.targetNodeId or operation.targetSelector.`
+          `write_operation step '${step.id}' requires operation.targetNodeId or operation.targetNodeIds or operation.targetSelector.`
         );
       }
       if (step.operation.targetNodeId) {
-        const normalizedTarget = step.operation.targetNodeId.trim().toLowerCase();
-        if (["placeholder", "unused", "target", "todo", "tbd"].includes(normalizedTarget)) {
-          throw invalidPlan(
-            `write_operation step '${step.id}' uses placeholder targetNodeId '${step.operation.targetNodeId}'.`
-          );
-        }
-        if (!doc.nodes.some((node) => node.id === step.operation?.targetNodeId)) {
-          throw invalidPlan(
-            `write_operation step '${step.id}' targetNodeId '${step.operation.targetNodeId}' was not found in the document.`
-          );
+        validateConcreteTarget(step.id, step.operation.targetNodeId, doc);
+      }
+      if (step.operation.targetNodeIds?.length) {
+        for (const targetNodeId of step.operation.targetNodeIds) {
+          validateConcreteTarget(step.id, targetNodeId, doc);
         }
       }
       if (isPayloadSemanticallyEmpty(step.operation.type, step.operation.payload)) {
@@ -72,6 +67,16 @@ function invalidPlan(message: string): AgentError {
     message,
     retryable: false
   });
+}
+
+function validateConcreteTarget(stepId: string, targetNodeId: string, doc: DocumentIR): void {
+  const normalizedTarget = targetNodeId.trim().toLowerCase();
+  if (["placeholder", "unused", "target", "todo", "tbd"].includes(normalizedTarget)) {
+    throw invalidPlan(`write_operation step '${stepId}' uses placeholder targetNodeId '${targetNodeId}'.`);
+  }
+  if (!doc.nodes.some((node) => node.id === targetNodeId)) {
+    throw invalidPlan(`write_operation step '${stepId}' targetNodeId '${targetNodeId}' was not found in the document.`);
+  }
 }
 
 function isPayloadSemanticallyEmpty(type: string, payload: Record<string, unknown>): boolean {

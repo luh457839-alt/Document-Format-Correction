@@ -12,6 +12,8 @@ from uuid import uuid4
 from ..core.model_config import build_ts_agent_env, load_model_config
 from ..core.project_paths import PROJECT_ROOT, TMP_DIR
 
+_DEFAULT_TIMEOUT = object()
+
 class TsAgentBridgeError(RuntimeError):
     pass
 
@@ -41,7 +43,7 @@ class TsAgentBridgeOptions:
 
 def _run_ts_agent_command(
     command: dict[str, Any],
-    timeout_sec: float | None = None,
+    timeout_sec: float | None | object = _DEFAULT_TIMEOUT,
     options: TsAgentBridgeOptions | None = None,
 ) -> dict[str, Any]:
     if not isinstance(command, dict):
@@ -50,8 +52,8 @@ def _run_ts_agent_command(
     if not command_type:
         raise TsAgentBridgeError("command.type must be a non-empty string.")
 
-    opts = options or TsAgentBridgeOptions()
-    effective_timeout = timeout_sec if timeout_sec is not None else opts.timeout_sec
+    opts = options or _load_default_bridge_options()
+    effective_timeout = opts.timeout_sec if timeout_sec is _DEFAULT_TIMEOUT else timeout_sec
     return _run_cli_request({"command": dict(command)}, effective_timeout, opts)
 
 
@@ -59,7 +61,7 @@ def submit_agent_turn(
     session_id: str,
     user_input: str,
     *,
-    timeout_sec: float | None = None,
+    timeout_sec: float | None | object = _DEFAULT_TIMEOUT,
     options: TsAgentBridgeOptions | None = None,
 ) -> dict[str, Any]:
     command = {
@@ -73,7 +75,7 @@ def submit_agent_turn(
 def create_session(
     session_id: str,
     *,
-    timeout_sec: float | None = None,
+    timeout_sec: float | None | object = _DEFAULT_TIMEOUT,
     options: TsAgentBridgeOptions | None = None,
 ) -> dict[str, Any]:
     return _run_ts_agent_command(
@@ -88,7 +90,7 @@ def create_session(
 
 def list_sessions(
     *,
-    timeout_sec: float | None = None,
+    timeout_sec: float | None | object = _DEFAULT_TIMEOUT,
     options: TsAgentBridgeOptions | None = None,
 ) -> dict[str, Any]:
     return _run_ts_agent_command(
@@ -102,7 +104,7 @@ def attach_document(
     session_id: str,
     docx_path: str,
     *,
-    timeout_sec: float | None = None,
+    timeout_sec: float | None | object = _DEFAULT_TIMEOUT,
     options: TsAgentBridgeOptions | None = None,
 ) -> dict[str, Any]:
     return _run_ts_agent_command(
@@ -119,7 +121,7 @@ def attach_document(
 def get_session_state(
     session_id: str,
     *,
-    timeout_sec: float | None = None,
+    timeout_sec: float | None | object = _DEFAULT_TIMEOUT,
     options: TsAgentBridgeOptions | None = None,
 ) -> dict[str, Any]:
     return _run_ts_agent_command(
@@ -129,11 +131,34 @@ def get_session_state(
     )
 
 
+def get_turn_run_status(
+    *,
+    session_id: str | None = None,
+    turn_run_id: str | None = None,
+    timeout_sec: float | None | object = _DEFAULT_TIMEOUT,
+    options: TsAgentBridgeOptions | None = None,
+) -> dict[str, Any]:
+    normalized_session_id = str(session_id or "").strip()
+    normalized_turn_run_id = str(turn_run_id or "").strip()
+    if not normalized_session_id and not normalized_turn_run_id:
+        raise TsAgentBridgeError("E_TURN_RUN_QUERY_INVALID: session_id or turn_run_id is required.")
+    command: dict[str, Any] = {"type": "get_turn_run_status"}
+    if normalized_session_id:
+        command["sessionId"] = normalized_session_id
+    if normalized_turn_run_id:
+        command["turnRunId"] = normalized_turn_run_id
+    return _run_ts_agent_command(
+        command,
+        timeout_sec=timeout_sec,
+        options=options,
+    )
+
+
 def update_session_title(
     session_id: str,
     title: str,
     *,
-    timeout_sec: float | None = None,
+    timeout_sec: float | None | object = _DEFAULT_TIMEOUT,
     options: TsAgentBridgeOptions | None = None,
 ) -> dict[str, Any]:
     return _run_ts_agent_command(
@@ -150,7 +175,7 @@ def update_session_title(
 def delete_session(
     session_id: str,
     *,
-    timeout_sec: float | None = None,
+    timeout_sec: float | None | object = _DEFAULT_TIMEOUT,
     options: TsAgentBridgeOptions | None = None,
 ) -> dict[str, Any]:
     return _run_ts_agent_command(
@@ -162,7 +187,7 @@ def delete_session(
 
 def _run_cli_request(
     request_payload: dict[str, Any],
-    effective_timeout: float,
+    effective_timeout: float | None,
     opts: TsAgentBridgeOptions,
 ) -> dict[str, Any]:
     if not opts.cli_path.exists():
@@ -200,7 +225,7 @@ def _run_cli_request(
             )
         except subprocess.TimeoutExpired as exc:
             raise TsAgentBridgeTimeout(
-                f"ts_agent execution timed out after {effective_timeout:.1f}s."
+                f"ts_agent execution timed out after {float(effective_timeout):.1f}s."
             ) from exc
         except OSError as exc:
             raise _bridge_error("E_TS_AGENT_START_FAILED", f"failed to start ts_agent process: {exc}") from exc
@@ -251,6 +276,13 @@ def _build_subprocess_env() -> dict[str, str]:
     return env
 
 
+def _load_default_bridge_options() -> TsAgentBridgeOptions:
+    config = load_model_config()
+    timeout_ms = config.planner.sync_request_timeout_ms
+    timeout_sec = float(timeout_ms) / 1000.0 if timeout_ms is not None else None
+    return TsAgentBridgeOptions(timeout_sec=timeout_sec)
+
+
 def _bridge_error(code: str, message: str) -> TsAgentBridgeError:
     return TsAgentBridgeError(f"{code}: {message}")
 
@@ -261,6 +293,7 @@ __all__ = [
     "submit_agent_turn",
     "attach_document",
     "get_session_state",
+    "get_turn_run_status",
     "update_session_title",
     "delete_session",
     "TsAgentBridgeError",

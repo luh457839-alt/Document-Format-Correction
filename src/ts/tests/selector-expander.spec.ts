@@ -61,7 +61,36 @@ describe("selector expander", () => {
 
     const expanded = expandPlanSelectors(plan, doc);
 
+    expect(expanded.steps).toHaveLength(1);
+    expect(expanded.steps[0]?.operation?.targetNodeId).toBeUndefined();
+    expect(expanded.steps[0]?.operation?.targetNodeIds).toEqual(["p_1_r_0", "p_1_r_1", "p_2_r_0"]);
+    expect(expanded.steps[0]?.operation?.targetSelector).toBeUndefined();
+    expect(expanded.steps[0]?.operation?.sourceTargetSelector?.scope).toBe("body");
+  });
+
+  it("keeps structural selector writes expanded per target node", () => {
+    const plan: Plan = {
+      taskId: "task2",
+      goal: "合并正文段落",
+      steps: [
+        {
+          id: "step_merge_body",
+          toolName: "write_operation",
+          readOnly: false,
+          idempotencyKey: "write:merge:body",
+          operation: {
+            id: "op_merge_body",
+            type: "merge_paragraph",
+            targetSelector: { scope: "body" },
+            payload: {}
+          }
+        }
+      ]
+    };
+
+    const expanded = expandPlanSelectors(plan, doc);
+
     expect(expanded.steps.map((step) => step.operation?.targetNodeId)).toEqual(["p_1_r_0", "p_1_r_1", "p_2_r_0"]);
-    expect(expanded.steps.every((step) => step.operation?.targetSelector === undefined)).toBe(true);
+    expect(expanded.steps.every((step) => step.operation?.targetNodeIds === undefined)).toBe(true);
   });
 });

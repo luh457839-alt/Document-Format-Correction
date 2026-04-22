@@ -20,7 +20,7 @@ export const ChatSpace: React.FC = () => {
   const pendingDocument = currentSessionId ? pendingDocuments[currentSessionId] : null;
 
   const handleSendMessage = async (text: string) => {
-    return await sendMessage(text);
+    await sendMessage(text);
   };
 
   const handleUploadDocument = async (file: File) => {
@@ -59,7 +59,7 @@ export const ChatSpace: React.FC = () => {
       <InputArea
         onSendMessage={handleSendMessage}
         onUploadDocument={handleUploadDocument}
-        disabled={isSending || isUploading || !currentSessionId}
+        disabled={isSending || isUploading}
         isUploading={isUploading}
         pendingFileName={pendingDocument?.name}
       />

@@ -23,6 +23,11 @@ class PlannerModelConfig:
     api_key: str = "sk-local-gemma4"
     model: str = "gemma-4"
     timeout_ms: int | None = None
+    step_timeout_ms: int = 60000
+    task_timeout_ms: int | None = None
+    python_tool_timeout_ms: int | None = None
+    max_turns: int = 24
+    sync_request_timeout_ms: int = 300000
     max_retries: int = 0
     temperature: float = 0.0
     use_json_schema: bool | None = None
@@ -92,6 +97,13 @@ def build_ts_agent_env(config: AppModelConfig) -> dict[str, str]:
         env["TS_AGENT_PLANNER_RUNTIME_MODE"] = config.planner.runtime_mode
     if config.planner.timeout_ms is not None:
         env["TS_AGENT_PLANNER_TIMEOUT_MS"] = str(int(config.planner.timeout_ms))
+    env["TS_AGENT_STEP_TIMEOUT_MS"] = str(int(config.planner.step_timeout_ms))
+    env["TS_AGENT_MAX_TURNS"] = str(int(config.planner.max_turns))
+    env["TS_AGENT_SYNC_REQUEST_TIMEOUT_MS"] = str(int(config.planner.sync_request_timeout_ms))
+    if config.planner.task_timeout_ms is not None:
+        env["TS_AGENT_TASK_TIMEOUT_MS"] = str(int(config.planner.task_timeout_ms))
+    if config.planner.python_tool_timeout_ms is not None:
+        env["TS_AGENT_PYTHON_TOOL_TIMEOUT_MS"] = str(int(config.planner.python_tool_timeout_ms))
     if config.planner.use_json_schema is not None:
         env["TS_AGENT_PLANNER_USE_JSON_SCHEMA"] = (
             "true" if config.planner.use_json_schema else "false"
@@ -118,6 +130,19 @@ def _config_from_raw(raw: Any, defaults: AppModelConfig) -> AppModelConfig:
         api_key=_as_str(planner_raw.get("api_key"), chat.api_key),
         model=_as_str(planner_raw.get("model"), chat.model),
         timeout_ms=_resolve_planner_timeout(planner_raw, defaults.planner.timeout_ms),
+        step_timeout_ms=_as_non_negative_int(
+            planner_raw.get("step_timeout_ms"), defaults.planner.step_timeout_ms
+        ),
+        task_timeout_ms=_resolve_optional_int(
+            planner_raw, "task_timeout_ms", defaults.planner.task_timeout_ms
+        ),
+        python_tool_timeout_ms=_resolve_optional_int(
+            planner_raw, "python_tool_timeout_ms", defaults.planner.python_tool_timeout_ms
+        ),
+        max_turns=_as_non_negative_int(planner_raw.get("max_turns"), defaults.planner.max_turns),
+        sync_request_timeout_ms=_as_non_negative_int(
+            planner_raw.get("sync_request_timeout_ms"), defaults.planner.sync_request_timeout_ms
+        ),
         max_retries=_as_int(planner_raw.get("max_retries"), defaults.planner.max_retries),
         temperature=_as_float(planner_raw.get("temperature"), defaults.planner.temperature),
         use_json_schema=_resolve_optional_bool(
@@ -156,6 +181,11 @@ def _as_int(value: Any, default: int) -> int:
         return default
 
 
+def _as_non_negative_int(value: Any, default: int) -> int:
+    resolved = _as_int(value, default)
+    return resolved if resolved >= 0 else default
+
+
 def _as_float(value: Any, default: float) -> float:
     try:
         return float(value)
@@ -192,7 +222,17 @@ def _resolve_planner_timeout(source: dict[str, Any], default: int | None) -> int
     value = source.get("timeout_ms")
     if value is None:
         return None
-    return _as_int(value, 0)
+    return _as_non_negative_int(value, 0)
+
+
+def _resolve_optional_int(source: dict[str, Any], key: str, default: int | None) -> int | None:
+    if key not in source:
+        return default
+    value = source.get(key)
+    if value is None:
+        return None
+    resolved = _as_int(value, -1)
+    return resolved if resolved >= 0 else default
 
 
 def _resolve_runtime_mode(value: Any) -> str | None:

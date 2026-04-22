@@ -65,6 +65,20 @@ describe("planner", () => {
 });
 
 describe("executor", () => {
+  it("uses a longer default step timeout than 1000ms", async () => {
+    const registry = new InMemoryToolRegistry();
+    registry.register(new DelayReadTool("slow_read", 1100, []));
+    const executor = new DefaultExecutor({ toolRegistry: registry });
+    const plan: Plan = {
+      taskId: "t_default_timeout",
+      goal: "g",
+      steps: [{ id: "slow", toolName: "slow_read", readOnly: true, idempotencyKey: "slow:1" }]
+    };
+
+    const result = await executor.execute(plan, baseDoc);
+    expect(result.status).toBe("completed");
+  });
+
   it("runs readOnly tools in parallel and write tools serially", async () => {
     const registry = new InMemoryToolRegistry();
     const readMarks: number[] = [];

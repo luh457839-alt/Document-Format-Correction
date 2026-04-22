@@ -47,9 +47,14 @@ async function createRunnerScript(mode: "success" | "error"): Promise<{ runnerPa
           "  const input = request.input || {};",
           "  const doc = JSON.parse(JSON.stringify(input.doc || {}));",
           "  if (request.toolName === 'write_operation') {",
-          "    const target = Array.isArray(doc.nodes) ? doc.nodes.find((item) => item.id === input.operation.targetNodeId) : undefined;",
-          "    if (target) target.style = { ...(target.style || {}), font_name: 'SimSun', operation: 'set_font' };",
-          "    fs.writeFileSync(outputPath, JSON.stringify({ ok: true, result: { doc, summary: 'Applied set_font to n1.' } }, null, 2));",
+          "    const targetIds = Array.isArray(input.operation?.targetNodeIds) ? input.operation.targetNodeIds : [input.operation?.targetNodeId].filter(Boolean);",
+          "    if (Array.isArray(doc.nodes)) {",
+          "      for (const node of doc.nodes) {",
+          "        if (targetIds.includes(node.id)) node.style = { ...(node.style || {}), font_name: 'SimSun', operation: 'set_font' };",
+          "      }",
+          "    }",
+          "    const summary = targetIds.length > 1 ? `Applied set_font to ${targetIds.length} nodes.` : 'Applied set_font to n1.';",
+          "    fs.writeFileSync(outputPath, JSON.stringify({ ok: true, result: { doc, summary } }, null, 2));",
           "    process.exit(0);",
           "  }",
           "  if (request.toolName === 'materialize_document') {",
@@ -156,7 +161,7 @@ describe("python tool proxy", () => {
     );
   });
 
-  it("expands selector-based writes into multiple python operations", async () => {
+  it("batches selector-based writes into a single python operation", async () => {
     class SelectorPlanner implements Planner {
       async createPlan(_goal: string, _doc: DocumentIR): Promise<Plan> {
         return {
@@ -217,9 +222,9 @@ describe("python tool proxy", () => {
     );
 
     expect(result.status).toBe("completed");
-    expect(result.changeSet.changes).toHaveLength(3);
+    expect(result.changeSet.changes).toHaveLength(1);
     await expect(readFile(logPath, "utf8")).resolves.toBe(
-      "execute:write_operation\nexecute:write_operation\nexecute:write_operation\nexecute:materialize_document\n"
+      "execute:write_operation\nexecute:materialize_document\n"
     );
   });
 });

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 import unittest
 from pathlib import Path
 from urllib import error, request
@@ -209,6 +210,195 @@ class WebApiHttpRegressionTest(unittest.TestCase):
         self.assertIn("message", submit_response["json"]["error"])
         self.assertIn("E_PYTHON_TOOL_START_FAILED", submit_response["json"]["error"]["message"])
         self.assertIn("No module named 'src'", submit_response["json"]["error"]["message"])
+
+    def test_web_api_async_submit_returns_job_and_poll_snapshot(self) -> None:
+        bridge_state = {
+            "sessionId": "chat-main",
+            "attachedDocument": None,
+            "turns": [],
+        }
+        queried_states: list[str] = []
+
+        def fake_submit_agent_turn(session_id: str, user_input: str, *, timeout_sec=None, options=None):  # noqa: ANN001
+            self.assertIsNone(timeout_sec)
+            _ = options
+            self.assertEqual(session_id, "chat-main")
+            self.assertEqual(user_input, "请开始处理")
+            bridge_state["turns"] = [
+                {"role": "user", "content": "请开始处理"},
+                {"role": "assistant", "content": "处理完成"},
+            ]
+            return {
+                "session": self._session_snapshot(bridge_state),
+                "response": {"content": "处理完成"},
+            }
+
+        def fake_get_turn_run_status(*, session_id=None, turn_run_id=None, timeout_sec=None, options=None):  # noqa: ANN001
+            _ = timeout_sec, options, turn_run_id
+            self.assertEqual(session_id, "chat-main")
+            queried_states.append("queried")
+            status = "running" if len(queried_states) == 1 else "completed"
+            return {
+                "turnRun": {
+                    "turnRunId": "turn-run-1",
+                    "sessionId": "chat-main",
+                    "status": status,
+                    "mode": "chat",
+                    "summary": "正在生成回复" if status == "running" else "已完成",
+                    "steps": [
+                        {"id": "decide_mode", "title": "判定模式", "status": "completed"},
+                        {
+                            "id": "generate_reply",
+                            "title": "生成回复",
+                            "status": "running" if status == "running" else "completed",
+                        },
+                    ],
+                    "createdAt": 1,
+                    "updatedAt": 2,
+                }
+            }
+
+        def fake_get_session_state(session_id: str, *, timeout_sec=None, options=None):  # noqa: ANN001
+            _ = timeout_sec, options
+            self.assertEqual(session_id, "chat-main")
+            return {"session": self._session_snapshot(bridge_state)}
+
+        root = Path(".tmp") / f"web-api-async-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with (
+                patch("src.python.gui.web_api.submit_agent_turn", side_effect=fake_submit_agent_turn),
+                patch("src.python.gui.web_api.get_turn_run_status", side_effect=fake_get_turn_run_status),
+                patch("src.python.gui.web_api.get_session_state", side_effect=fake_get_session_state),
+            ):
+                server = WebApiServer(
+                    WebApiConfig(
+                        port=0,
+                        front_dist_dir=front_dist_dir,
+                        upload_dir=upload_dir,
+                    )
+                )
+                server.start()
+                try:
+                    submit_response = self._post_json(
+                        f"{server.base_url}/api/sessions/chat-main/messages/async",
+                        {"content": "请开始处理"},
+                    )
+                    self.assertEqual(submit_response["status"], 202)
+                    job_id = submit_response["json"]["job"]["jobId"]
+
+                    first_poll = self._get_json(
+                        f"{server.base_url}/api/sessions/chat-main/message-jobs/{job_id}"
+                    )
+                    self.assertEqual(first_poll["status"], 200)
+                    self.assertEqual(first_poll["json"]["job"]["status"], "running")
+                    self.assertEqual(first_poll["json"]["job"]["turnRunId"], "turn-run-1")
+
+                    second_poll = self._get_json(
+                        f"{server.base_url}/api/sessions/chat-main/message-jobs/{job_id}"
+                    )
+                    self.assertEqual(second_poll["status"], 200)
+                    self.assertEqual(second_poll["json"]["job"]["status"], "completed")
+                    self.assertEqual(
+                        second_poll["json"]["session"]["messages"][-1]["content"],
+                        "处理完成",
+                    )
+                finally:
+                    server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_web_api_sync_submit_times_out_but_job_continues(self) -> None:
+        bridge_state = {
+            "sessionId": "chat-main",
+            "attachedDocument": None,
+            "turns": [],
+        }
+
+        def fake_submit_agent_turn(session_id: str, user_input: str, *, timeout_sec=None, options=None):  # noqa: ANN001
+            self.assertIsNone(timeout_sec)
+            _ = options
+            self.assertEqual(session_id, "chat-main")
+            self.assertEqual(user_input, "请继续处理")
+            time.sleep(0.15)
+            bridge_state["turns"] = [
+                {"role": "user", "content": "请继续处理"},
+                {"role": "assistant", "content": "后台任务已完成"},
+            ]
+            return {
+                "session": self._session_snapshot(bridge_state),
+                "response": {"content": "后台任务已完成"},
+            }
+
+        def fake_get_turn_run_status(*, session_id=None, turn_run_id=None, timeout_sec=None, options=None):  # noqa: ANN001
+            _ = turn_run_id, timeout_sec, options
+            return {
+                "turnRun": {
+                    "turnRunId": "turn-run-sync-1",
+                    "sessionId": session_id,
+                    "status": "running",
+                    "summary": "仍在执行",
+                    "steps": [{"id": "execute_runtime", "title": "规划并执行步骤", "status": "running"}],
+                    "createdAt": 1,
+                    "updatedAt": 2,
+                }
+            }
+
+        def fake_get_session_state(session_id: str, *, timeout_sec=None, options=None):  # noqa: ANN001
+            _ = timeout_sec, options
+            self.assertEqual(session_id, "chat-main")
+            return {"session": self._session_snapshot(bridge_state)}
+
+        root = Path(".tmp") / f"web-api-sync-timeout-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with (
+                patch("src.python.gui.web_api.submit_agent_turn", side_effect=fake_submit_agent_turn),
+                patch("src.python.gui.web_api.get_turn_run_status", side_effect=fake_get_turn_run_status),
+                patch("src.python.gui.web_api.get_session_state", side_effect=fake_get_session_state),
+            ):
+                server = WebApiServer(
+                    WebApiConfig(
+                        port=0,
+                        front_dist_dir=front_dist_dir,
+                        upload_dir=upload_dir,
+                        sync_request_timeout_sec=0.05,
+                    )
+                )
+                server.start()
+                try:
+                    submit_response = self._post_json(
+                        f"{server.base_url}/api/sessions/chat-main/messages",
+                        {"content": "请继续处理"},
+                    )
+                    self.assertEqual(submit_response["status"], 504)
+                    self.assertEqual(submit_response["json"]["error"]["code"], "E_SYNC_REQUEST_TIMEOUT")
+                    job_id = submit_response["json"]["error"]["jobId"]
+
+                    time.sleep(0.2)
+                    follow_up = self._get_json(
+                        f"{server.base_url}/api/sessions/chat-main/message-jobs/{job_id}"
+                    )
+                    self.assertEqual(follow_up["status"], 200)
+                    self.assertEqual(follow_up["json"]["job"]["status"], "completed")
+                    self.assertEqual(
+                        follow_up["json"]["session"]["messages"][-1]["content"],
+                        "后台任务已完成",
+                    )
+                finally:
+                    server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def _session_snapshot(self, state: dict[str, object]) -> dict[str, object]:
         attached_document = state["attachedDocument"]

@@ -12,7 +12,7 @@ export class FixedPlanner implements Planner {
           id: "step_read_structure",
           toolName: "inspect_document",
           readOnly: true,
-          timeoutMs: 1000,
+          timeoutMs: 60000,
           retryLimit: 1,
           idempotencyKey: "inspect_document:step_read_structure"
         },
@@ -20,7 +20,7 @@ export class FixedPlanner implements Planner {
           id: "step_set_font",
           toolName: "write_operation",
           readOnly: false,
-          timeoutMs: 1000,
+          timeoutMs: 60000,
           retryLimit: 1,
           idempotencyKey: "write_operation:step_set_font",
           operation: {

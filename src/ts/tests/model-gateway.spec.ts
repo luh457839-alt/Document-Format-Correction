@@ -35,10 +35,10 @@ function buildGatewayFromRawEnvelope(rawEnvelope: string) {
   });
 }
 
-function buildGatewayFromContent(content: unknown) {
+function buildGatewayFromContent(content: unknown, choice: Record<string, unknown> = {}) {
   return buildGatewayFromRawEnvelope(
     JSON.stringify({
-      choices: [{ message: { content } }]
+      choices: [{ ...choice, message: { content } }]
     })
   );
 }
@@ -84,15 +84,15 @@ describe("LlmAgentModelGateway.decideTurn", () => {
     });
   });
 
-  it("accepts clarification decisions that inspect before replying", async () => {
+  it("accepts execute decisions for body edits without forcing a clarification", async () => {
     const gateway = buildGatewayFromContent(
       JSON.stringify({
-        mode: "chat",
-        goal: "澄清正文范围",
+        mode: "execute",
+        goal: "把正文改成红色",
         requiresDocument: true,
-        needsClarification: true,
-        clarificationKind: "selector_scope",
-        clarificationReason: "正文可能只指普通正文，也可能包含项目符号/编号段落"
+        needsClarification: false,
+        clarificationKind: "none",
+        clarificationReason: ""
       })
     );
 
@@ -102,12 +102,12 @@ describe("LlmAgentModelGateway.decideTurn", () => {
         userInput: "把正文改成红色"
       })
     ).resolves.toEqual({
-      mode: "chat",
-      goal: "澄清正文范围",
+      mode: "execute",
+      goal: "把正文改成红色",
       requiresDocument: true,
-      needsClarification: true,
-      clarificationKind: "selector_scope",
-      clarificationReason: "正文可能只指普通正文，也可能包含项目符号/编号段落"
+      needsClarification: false,
+      clarificationKind: "none",
+      clarificationReason: ""
     });
   });
 
@@ -261,7 +261,7 @@ describe("LlmAgentModelGateway.decideTurn", () => {
   });
 
   it("rejects when envelope content is empty", async () => {
-    const gateway = buildGatewayFromContent("   ");
+    const gateway = buildGatewayFromContent("   ", { finish_reason: "stop" });
 
     await expectAgentError(
       async () =>
@@ -270,7 +270,109 @@ describe("LlmAgentModelGateway.decideTurn", () => {
           userInput: "你好"
         }),
       "E_AGENT_MODEL_RESPONSE",
-      "empty message content"
+      "empty message content string"
+    );
+  });
+
+  it("parses array-based message content for turn decisions", async () => {
+    const gateway = buildGatewayFromContent([
+      { type: "text", text: "{\"mode\":\"inspect\",\"goal\":\"总结当前文档结构\"," },
+      {
+        type: "text",
+        text: "\"requiresDocument\":true,\"needsClarification\":false,\"clarificationKind\":\"none\",\"clarificationReason\":\"\"}"
+      }
+    ]);
+
+    await expect(
+      gateway.decideTurn({
+        session: emptySession,
+        userInput: "总结文档"
+      })
+    ).resolves.toEqual({
+      mode: "inspect",
+      goal: "总结当前文档结构",
+      requiresDocument: true,
+      needsClarification: false,
+      clarificationKind: "none",
+      clarificationReason: ""
+    });
+  });
+
+  it("recovers turn-decision content from choice.text when message.content is missing", async () => {
+    const gateway = buildGatewayFromRawEnvelope(
+      JSON.stringify({
+        choices: [
+          {
+            text: JSON.stringify({
+              mode: "inspect",
+              goal: "总结当前文档结构",
+              requiresDocument: true,
+              needsClarification: false,
+              clarificationKind: "none",
+              clarificationReason: ""
+            }),
+            message: {}
+          }
+        ]
+      })
+    );
+
+    await expect(
+      gateway.decideTurn({
+        session: emptySession,
+        userInput: "总结文档"
+      })
+    ).resolves.toEqual({
+      mode: "inspect",
+      goal: "总结当前文档结构",
+      requiresDocument: true,
+      needsClarification: false,
+      clarificationKind: "none",
+      clarificationReason: ""
+    });
+  });
+
+  it("surfaces refusal diagnostics when envelope contains refusal", async () => {
+    const gateway = buildGatewayFromRawEnvelope(
+      JSON.stringify({
+        choices: [
+          {
+            finish_reason: "stop",
+            message: {
+              content: null,
+              refusal: "safety refusal"
+            }
+          }
+        ]
+      })
+    );
+
+    await expectAgentError(
+      async () =>
+        await gateway.decideTurn({
+          session: emptySession,
+          userInput: "你好"
+        }),
+      "E_AGENT_MODEL_RESPONSE",
+      "safety refusal"
+    );
+  });
+
+  it("surfaces incomplete choice diagnostics when message is missing", async () => {
+    const gateway = buildGatewayFromRawEnvelope(
+      JSON.stringify({
+        choices: [{ finish_reason: "length" }]
+      })
+    );
+
+    await expectAgentError(
+      async () =>
+        await gateway.decideTurn({
+          session: emptySession,
+          userInput: "你好"
+        }),
+      "E_AGENT_MODEL_RESPONSE",
+      "incomplete choices[0]"
     );
   });
 
@@ -296,6 +398,33 @@ describe("LlmAgentModelGateway.decideTurn", () => {
     ).resolves.toEqual({
       mode: "execute",
       goal: "执行当前文档格式修正",
+      requiresDocument: true,
+      needsClarification: false,
+      clarificationKind: "none",
+      clarificationReason: ""
+    });
+  });
+
+  it("normalizes mildly dirty turn decisions into the current decision contract", async () => {
+    const gateway = buildGatewayFromContent(
+      JSON.stringify({
+        mode: "execute",
+        goal: "  执行正文配色修正  ",
+        requires_document: "true",
+        needs_clarification: "false",
+        clarification_kind: "",
+        clarification_reason: ""
+      })
+    );
+
+    await expect(
+      gateway.decideTurn({
+        session: emptySession,
+        userInput: "把正文改成绿色"
+      })
+    ).resolves.toEqual({
+      mode: "execute",
+      goal: "执行正文配色修正",
       requiresDocument: true,
       needsClarification: false,
       clarificationKind: "none",
@@ -337,6 +466,8 @@ describe("LlmAgentModelGateway.decideTurn", () => {
 
     const messages = requestBodies[0]?.messages as Array<{ role?: string; content?: string }>;
     expect(messages[0]?.role).toBe("system");
+    expect(messages[0]?.content).toContain("你负责为文档格式助手判定单轮请求");
+    expect(messages[0]?.content).toContain("You route one user turn for a document-format assistant");
     expect(messages[0]?.content).toContain(
       "exactly these fields: mode, goal, requiresDocument, needsClarification, clarificationKind, clarificationReason"
     );
@@ -346,6 +477,63 @@ describe("LlmAgentModelGateway.decideTurn", () => {
     expect(messages[0]?.content).toContain("current user reply selects or clarifies that question");
     expect(messages[0]?.content).toContain("do not fall back to chat because of missing internal fields");
     expect(messages[0]?.content).toContain("output execute or needsClarification=true");
+    expect(messages[0]?.content).not.toContain("正文是否包含项目符号/编号段落");
+    expect(messages[0]?.content).not.toContain("正文 vs numbered/bulleted list paragraphs");
+    expect(messages[0]?.content).toContain("标题范围不清、段落锚点不明确");
+    expect(messages[0]?.content).toContain("ambiguous heading ranges, or unclear paragraph anchors");
+  });
+
+  it("uses bilingual turn-decision prompts to avoid empty upstream content on english-sensitive gateways", async () => {
+    const gateway = new LlmAgentModelGateway({
+      chatConfig: baseConfig,
+      plannerConfig: baseConfig,
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          messages?: Array<{ content?: string }>;
+        };
+        const systemPrompt = String(body.messages?.[0]?.content ?? "");
+        const hasChinese = /[\u4e00-\u9fff]/.test(systemPrompt);
+        return new Response(
+          JSON.stringify(
+            hasChinese
+              ? {
+                  choices: [
+                    {
+                      message: {
+                        content: JSON.stringify({
+                          ...baseTurnDecision
+                        })
+                      }
+                    }
+                  ]
+                }
+              : {
+                  choices: [
+                    {
+                      finish_reason: "stop",
+                      message: {
+                        content: "   "
+                      }
+                    }
+                  ]
+                }
+          ),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+    });
+
+    await expect(
+      gateway.decideTurn({
+        session: emptySession,
+        userInput: "你好"
+      })
+    ).resolves.toEqual({
+      ...baseTurnDecision
+    });
   });
 
   it("sends a complete required list for the turn-decision json schema", async () => {

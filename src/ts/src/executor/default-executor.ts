@@ -46,7 +46,8 @@ export class DefaultExecutor implements Executor {
     const options: NormalizedExecutorOptions = {
       dryRun: opts.dryRun ?? false,
       maxConcurrentReadOnly: opts.maxConcurrentReadOnly ?? 4,
-      defaultTimeoutMs: opts.defaultTimeoutMs ?? 1000,
+      defaultTimeoutMs: opts.defaultTimeoutMs ?? 60000,
+      budgetDeadlineMs: opts.budgetDeadlineMs,
       defaultRetryLimit: opts.defaultRetryLimit ?? 1,
       retryBackoffMs: opts.retryBackoffMs ?? 50,
       confirmStep: opts.confirmStep,
@@ -242,11 +243,48 @@ export class DefaultExecutor implements Executor {
       taskId,
       stepId: step.id,
       status: "running",
-      payload: { toolName: step.toolName, readOnly: step.readOnly },
+      payload: buildStepEventPayload(step),
       createdAt: started
     });
 
-    const timeoutMs = step.timeoutMs ?? options.defaultTimeoutMs;
+    const configuredTimeoutMs = step.timeoutMs ?? options.defaultTimeoutMs;
+    const remainingBudgetMs =
+      typeof options.budgetDeadlineMs === "number" ? Math.max(0, options.budgetDeadlineMs - Date.now()) : undefined;
+    if (remainingBudgetMs !== undefined && remainingBudgetMs <= 0) {
+      const budgetError = {
+        code: "E_TASK_TIMEOUT",
+        message: `Task budget exceeded before step ${step.id}.`,
+        retryable: false
+      };
+      const durationMs = Date.now() - started;
+      await this.emitEvent(options, {
+        type: "step_failed",
+        taskId,
+        stepId: step.id,
+        status: "failed",
+        payload: buildStepEventPayload(step, { error: budgetError }),
+        createdAt: Date.now()
+      });
+      return {
+        stepResult: {
+          stepId: step.id,
+          status: "failed",
+          retries: 0,
+          durationMs,
+          error: budgetError
+        }
+      };
+    }
+    const timeoutMs =
+      remainingBudgetMs !== undefined ? Math.min(configuredTimeoutMs, remainingBudgetMs) : configuredTimeoutMs;
+    const timeoutError =
+      remainingBudgetMs !== undefined && remainingBudgetMs < configuredTimeoutMs
+        ? {
+            code: "E_TASK_TIMEOUT",
+            message: `Task budget exceeded while executing step ${step.id}.`,
+            retryable: false
+          }
+        : { code: "E_TIMEOUT", message: `Step timed out (${timeoutMs}ms).`, retryable: true };
     const retryLimit = step.retryLimit ?? options.defaultRetryLimit;
     let retries = 0;
     const tool = this.toolRegistry.get(step.toolName);
@@ -260,7 +298,7 @@ export class DefaultExecutor implements Executor {
           taskId,
           stepId: step.id,
           status: "waiting_user",
-          payload: { reason: "Risk policy requires user confirmation." },
+          payload: buildStepEventPayload(step, { reason: "Risk policy requires user confirmation." }),
           createdAt: Date.now()
         });
         return {
@@ -285,7 +323,9 @@ export class DefaultExecutor implements Executor {
           taskId,
           stepId: step.id,
           status: "failed",
-          payload: { error: { code: "E_POLICY_REJECTED", message: "Risk policy rejected step." } },
+          payload: buildStepEventPayload(step, {
+            error: { code: "E_POLICY_REJECTED", message: "Risk policy rejected step." }
+          }),
           createdAt: Date.now()
         });
         return {
@@ -313,7 +353,7 @@ export class DefaultExecutor implements Executor {
         taskId,
         stepId: step.id,
         status: "skipped",
-        payload: { reason: result.summary },
+        payload: buildStepEventPayload(step, { reason: result.summary }),
         createdAt: Date.now()
       });
       this.log(taskId, step.id, result.status, result.durationMs, result.summary);
@@ -328,7 +368,7 @@ export class DefaultExecutor implements Executor {
           context: { taskId, stepId: step.id, dryRun: options.dryRun }
         };
         await tool.validate(input);
-        const output = await this.withTimeout(tool.execute(input), timeoutMs);
+        const output = await this.withTimeout(tool.execute(input), timeoutMs, timeoutError);
         const durationMs = Date.now() - started;
         if (!step.readOnly) {
           this.idempotencyStore.add(step.idempotencyKey);
@@ -347,7 +387,10 @@ export class DefaultExecutor implements Executor {
           taskId,
           stepId: step.id,
           status: "success",
-          payload: { summary: output.summary, rollbackToken: output.rollbackToken },
+          payload: buildStepEventPayload(step, {
+            summary: output.summary,
+            rollbackToken: output.rollbackToken
+          }),
           createdAt: Date.now()
         });
         this.log(taskId, step.id, stepResult.status, durationMs, output.summary);
@@ -373,7 +416,7 @@ export class DefaultExecutor implements Executor {
           taskId,
           stepId: step.id,
           status: "failed",
-          payload: { error: appErr },
+          payload: buildStepEventPayload(step, { error: appErr }),
           createdAt: Date.now()
         });
         this.log(taskId, step.id, stepResult.status, durationMs, appErr.message);
@@ -392,17 +435,21 @@ export class DefaultExecutor implements Executor {
       taskId,
       stepId: step.id,
       status: "failed",
-      payload: { error: exhaustedResult.error },
+      payload: buildStepEventPayload(step, { error: exhaustedResult.error }),
       createdAt: Date.now()
     });
     return { stepResult: exhaustedResult };
   }
 
-  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  private async withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    timeoutError: { code: string; message: string; retryable: boolean }
+  ): Promise<T> {
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        reject({ code: "E_TIMEOUT", message: `Step timed out (${timeoutMs}ms).`, retryable: true });
+        reject(timeoutError);
       }, timeoutMs);
     });
     try {
@@ -440,8 +487,24 @@ interface NormalizedExecutorOptions {
   dryRun: boolean;
   maxConcurrentReadOnly: number;
   defaultTimeoutMs: number;
+  budgetDeadlineMs?: number;
   defaultRetryLimit: number;
   retryBackoffMs: number;
   confirmStep?: (step: PlanStep) => Promise<ConfirmationDecision>;
   onExecutionEvent?: (event: ExecutionEvent) => Promise<void> | void;
+}
+
+function buildStepEventPayload(step: PlanStep, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const targetNodeIds = step.operation?.targetNodeIds;
+  const targetCount = Array.isArray(targetNodeIds) && targetNodeIds.length > 0 ? targetNodeIds.length : step.operation?.targetNodeId ? 1 : undefined;
+  return {
+    toolName: step.toolName,
+    readOnly: step.readOnly,
+    operationType: step.operation?.type,
+    targetNodeId: step.operation?.targetNodeId,
+    targetNodeIds,
+    targetCount,
+    targetSelector: step.operation?.sourceTargetSelector ?? step.operation?.targetSelector,
+    ...extra
+  };
 }

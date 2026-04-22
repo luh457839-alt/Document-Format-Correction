@@ -1,4 +1,8 @@
 import { AgentError, asAppError } from "../core/errors.js";
+import {
+  buildModelResponseErrorMessage,
+  parseOpenAiCompatibleChatText
+} from "../core/model-response.js";
 import type {
   ChatModelConfig,
   DocumentIR,
@@ -15,6 +19,7 @@ import {
   sanitizePromptMetadata,
   summarizeStructureForPrompt as summarizeStructureForPromptContext
 } from "./prompt-context.js";
+import { normalizeWriteOperationPayload } from "../tools/style-operation.js";
 
 const OPERATION_TYPES: ReadonlySet<OperationType> = new Set([
   "set_font",
@@ -32,25 +37,23 @@ const OPERATION_TYPES: ReadonlySet<OperationType> = new Set([
 ]);
 const PLAN_TOOL_NAMES = ["inspect_document", "write_operation"] as const;
 const PLAN_SYSTEM_PROMPT =
-  "You are a document-format planning engine. Return ONLY valid JSON matching the Plan schema. " +
-  "Every write_operation step must include operation.id, operation.type, and operation.payload. " +
-  "Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
-  "Each write_operation must specify either operation.targetNodeId or operation.targetSelector. " +
-  "Use targetSelector for semantic batch requests like body text, headings, or list items. " +
-  "If multiple nodes need changes, emit multiple concrete write_operation steps. Never omit semantic fields. " +
-  "Every write_operation must be semantically executable against the provided document structure. " +
-  "Never use placeholder ids like 'placeholder', 'unused', or 'target'. " +
-  "Never emit an empty payload for style-changing writes. " +
-  "Only downgrade to inspect_document when no real document range can be grounded.";
+  "你是一个文档格式规划引擎。请只返回符合 Plan schema 的有效 JSON，不要输出额外解释。 " +
+  "每个 write_operation 步骤都必须包含 operation.id、operation.type 和 operation.payload。 " +
+  "只能使用标准化 payload 字段：set_font -> { font_name }，set_size -> { font_size_pt }，set_alignment -> { paragraph_alignment }，set_font_color -> { font_color }，set_bold -> { is_bold }，set_italic -> { is_italic }，set_underline -> { is_underline }，set_strike -> { is_strike }，set_highlight_color -> { highlight_color }，set_all_caps -> { is_all_caps }，merge_paragraph -> { }，split_paragraph -> { split_offset }。 " +
+  "每个 write_operation 必须指定 operation.targetNodeId 或 operation.targetSelector；针对正文、标题、列表等语义批量范围优先使用 targetSelector。 " +
+  "对于可批量的语义写操作，优先输出 1 个带 targetSelector 的语义 step，由 runtime 展开成 targetNodeId 或 targetNodeIds；除非操作本身不可批量，否则不要自己枚举每个命中节点。每个 write_operation 都必须能基于给定文档结构语义上真实执行。 " +
+  "不要使用 'placeholder'、'unused'、'target' 之类的占位 id；样式修改类写操作不要输出空 payload。只有在无法落到真实文档范围时，才降级为 inspect_document。 " +
+  "You are a document-format planning engine. Return valid JSON matching the Plan schema and no extra commentary. " +
+  "Every write_operation step must include operation.id, operation.type, and operation.payload. Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
+  "Each write_operation must specify either operation.targetNodeId or operation.targetSelector. Use targetSelector for semantic batch requests like body text, headings, or list items. For batchable semantic writes, prefer one semantic write_operation step; the runtime will expand matched selectors into targetNodeId or targetNodeIds. Do not enumerate every matched node yourself unless the operation is inherently non-batchable. Never omit semantic fields. Every write_operation must be semantically executable against the provided document structure. Never use placeholder ids like 'placeholder', 'unused', or 'target'. Never emit an empty payload for style-changing writes. Only downgrade to inspect_document when no real document range can be grounded.";
 const PLAN_REPAIR_SYSTEM_PROMPT =
-  "You repair invalid document-format plans. Return ONLY one valid Plan JSON object. " +
-  "Preserve the user's goal, preserve valid existing fields when possible, and fix validation failures. " +
+  "你负责修复无效的文档格式 Plan。请只返回 1 个有效的 Plan JSON 对象。 " +
+  "尽量保留用户目标和已有的有效字段，并修复校验失败项。只能使用标准化 payload 字段；每个 write_operation 都必须提供 targetNodeId 或 targetSelector。 " +
+  "只要文档结构允许，就优先把无效写操作修成语义上可执行的有效写操作；不要使用 'placeholder'、'unused'、'target' 之类的占位 id，也不要输出空 payload。 " +
+  "如果某个写操作无法落到真实节点或选择器，就把它改成只读 inspect_document，而不是留空字段。 " +
+  "You repair invalid document-format plans. Return exactly one valid Plan JSON object. Preserve the user's goal, preserve valid existing fields when possible, and fix validation failures. " +
   "Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
-  "Every write_operation must provide targetNodeId or targetSelector. " +
-  "Repair invalid writes into semantically executable writes whenever the document structure allows it. " +
-  "Never use placeholder ids like 'placeholder', 'unused', or 'target'. " +
-  "Never emit an empty payload for style-changing writes. " +
-  "If a write cannot be grounded to a real node or selector, convert it to a read-only inspect_document step instead of leaving fields blank.";
+  "Every write_operation must provide targetNodeId or targetSelector. Repair invalid writes into semantically executable writes whenever the document structure allows it. Never use placeholder ids like 'placeholder', 'unused', or 'target'. Never emit an empty payload for style-changing writes. If a write cannot be grounded to a real node or selector, convert it to a read-only inspect_document step instead of leaving fields blank.";
 const MAX_PROMPT_NODES = 50;
 const MAX_PROMPT_NODE_IDS = 200;
 const MAX_NODE_TEXT_PREVIEW = 160;
@@ -176,12 +179,36 @@ export function resolvePlannerModelConfig(
     baseUrl,
     model,
     timeoutMs,
+    ...resolvePlannerRuntimeTuning(override, env),
     maxRetries,
     temperature,
     useJsonSchema,
     schemaStrict,
     compatMode,
     runtimeMode
+  };
+}
+
+export function resolvePlannerRuntimeTuning(
+  override: Partial<PlannerModelConfig> = {},
+  env: NodeJS.ProcessEnv = process.env
+): Pick<
+  PlannerModelConfig,
+  "stepTimeoutMs" | "taskTimeoutMs" | "pythonToolTimeoutMs" | "maxTurns" | "syncRequestTimeoutMs"
+> {
+  return {
+    stepTimeoutMs: pickNumber(override.stepTimeoutMs, env.TS_AGENT_STEP_TIMEOUT_MS, 60000),
+    taskTimeoutMs: pickOptionalNumber(override.taskTimeoutMs, env.TS_AGENT_TASK_TIMEOUT_MS),
+    pythonToolTimeoutMs: pickOptionalNumber(
+      override.pythonToolTimeoutMs,
+      env.TS_AGENT_PYTHON_TOOL_TIMEOUT_MS
+    ),
+    maxTurns: pickNumber(override.maxTurns, env.TS_AGENT_MAX_TURNS, 24),
+    syncRequestTimeoutMs: pickNumber(
+      override.syncRequestTimeoutMs,
+      env.TS_AGENT_SYNC_REQUEST_TIMEOUT_MS,
+      300000
+    )
   };
 }
 
@@ -213,9 +240,9 @@ export class LlmPlanner implements Planner {
     this.fetchImpl = deps.fetchImpl ?? fetch;
   }
 
-  async createPlan(goal: string, doc: DocumentIR): Promise<Plan> {
+  async createPlan(goal: string, doc: DocumentIR, options?: { timeoutMs?: number }): Promise<Plan> {
     const prompt = buildPrompt(goal, doc);
-    const raw = await this.requestPlanJson(prompt);
+    const raw = await this.requestPlanJson(prompt, PLAN_SYSTEM_PROMPT, options?.timeoutMs);
     return await this.parsePlanWithRepair(raw, goal, doc);
   }
 
@@ -233,14 +260,26 @@ export class LlmPlanner implements Planner {
     }
   }
 
-  private async requestPlanJson(prompt: string, systemPrompt = PLAN_SYSTEM_PROMPT): Promise<string> {
+  private async requestPlanJson(
+    prompt: string,
+    systemPrompt = PLAN_SYSTEM_PROMPT,
+    requestTimeoutMs?: number
+  ): Promise<string> {
     const endpoint = `${this.config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
     const maxRetries = this.config.maxRetries ?? 0;
     let lastErr: unknown;
+    const timeoutControl = resolveRequestTimeoutControl(this.config.timeoutMs, requestTimeoutMs, {
+      requestTimeoutCode: "E_PLANNER_REQUEST_TIMEOUT",
+      requestTimeoutMessage: "Planner request timed out",
+      taskTimeoutMessage: "Task budget exceeded while waiting for planner response."
+    });
 
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      if (timeoutControl.timeoutMs <= 0) {
+        throw timeoutControl.toTimeoutError();
+      }
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 30000);
+      const timeout = setTimeout(() => controller.abort(), timeoutControl.timeoutMs);
       try {
         const resp = await this.fetchImpl(endpoint, {
           method: "POST",
@@ -292,6 +331,18 @@ export class LlmPlanner implements Planner {
         const content = extractContent(payload);
         return content;
       } catch (err) {
+        if (controller.signal.aborted) {
+          const timeoutErr = timeoutControl.toTimeoutError(err);
+          if (timeoutControl.budgetClipped) {
+            throw timeoutErr;
+          }
+          lastErr = timeoutErr;
+          if (attempt === maxRetries) {
+            break;
+          }
+          await sleep(150 * (attempt + 1));
+          continue;
+        }
         lastErr = err;
         const appErr = asAppError(err, "E_PLANNER_REQUEST");
         const retryable = appErr.retryable || isNetworkError(err);
@@ -315,6 +366,7 @@ function buildPrompt(goal: string, doc: DocumentIR): string {
   return JSON.stringify(
     {
       instruction:
+        "请生成且只生成 1 个 Plan JSON 对象。每个步骤必须包含 id、toolName、readOnly(boolean)、idempotencyKey，以及可选的 timeoutMs/retryLimit/operation。 " +
         "Generate exactly one Plan JSON object. Each step must include id, toolName, readOnly(boolean), idempotencyKey, and optional timeoutMs/retryLimit/operation.",
       constraints: {
         allowedToolNames: Array.from(PLAN_TOOL_NAMES),
@@ -342,6 +394,8 @@ function buildPrompt(goal: string, doc: DocumentIR): string {
           "operation.targetNodeId must be one of availableNodeIds when present",
           "targetSelector.scope must be one of availableSelectorScopes",
           "use targetSelector for semantic groups like body or headings",
+          "prefer one semantic write_operation step for batchable semantic edits",
+          "runtime expands matched selectors into targetNodeId or targetNodeIds",
           "every write_operation must be semantically executable against the provided document structure",
           "never use placeholder ids like 'placeholder', 'unused', or 'target'",
           "never emit an empty payload for style-changing writes",
@@ -358,7 +412,6 @@ function buildPrompt(goal: string, doc: DocumentIR): string {
           "set_all_caps payload must use is_all_caps only",
           "merge_paragraph payload must be an empty object",
           "split_paragraph payload must use split_offset only",
-          "if multiple nodes require edits, create multiple write_operation steps",
           "only downgrade to inspect_document when no real document range can be grounded"
         ],
         selectorRules: selectorGuidance.selectorRules,
@@ -394,6 +447,7 @@ function buildRepairPrompt(
   return JSON.stringify(
     {
       instruction:
+        "请修复无效的 Plan JSON，并且只返回 1 个有效 Plan 对象，不要输出其他内容。 " +
         "Repair the invalid Plan JSON. Return exactly one valid Plan object and nothing else.",
       validationError,
       constraints: {
@@ -420,6 +474,8 @@ function buildRepairPrompt(
           "operation.targetNodeId must exactly match one value from availableNodeIds when present",
           "operation must include targetNodeId or targetSelector",
           "targetSelector.scope must be one of availableSelectorScopes",
+          "prefer one semantic write_operation step for batchable semantic edits",
+          "runtime expands matched selectors into targetNodeId or targetNodeIds",
           "never invent placeholder ids",
           "never leave write_operation semantic fields blank",
           "repair invalid writes into semantically executable writes whenever the document structure allows it",
@@ -517,10 +573,20 @@ function buildPlanJsonSchema(): Record<string, unknown> {
 }
 
 function extractContent(rawText: string): string {
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(rawText);
+    const result = parseOpenAiCompatibleChatText(rawText);
+    if (result.content === null) {
+      throw new AgentError({
+        code: "E_PLANNER_MODEL_RESPONSE",
+        message: buildModelResponseErrorMessage("Planner upstream payload", result),
+        retryable: false
+      });
+    }
+    return result.content;
   } catch (err) {
+    if (err instanceof AgentError) {
+      throw err;
+    }
     throw new AgentError({
       code: "E_PLANNER_MODEL_RESPONSE",
       message: `Planner upstream returned non-JSON envelope: ${String(err)}`,
@@ -528,29 +594,6 @@ function extractContent(rawText: string): string {
       cause: err
     });
   }
-
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    !("choices" in parsed) ||
-    !Array.isArray((parsed as { choices?: unknown[] }).choices)
-  ) {
-    throw new AgentError({
-      code: "E_PLANNER_MODEL_RESPONSE",
-      message: "Planner upstream payload is missing choices[].",
-      retryable: false
-    });
-  }
-  const firstChoice = (parsed as { choices: Array<{ message?: { content?: unknown } }> }).choices[0];
-  const content = firstChoice?.message?.content;
-  if (typeof content !== "string" || !content.trim()) {
-    throw new AgentError({
-      code: "E_PLANNER_MODEL_RESPONSE",
-      message: "Planner upstream payload has empty message content.",
-      retryable: false
-    });
-  }
-  return content.trim();
 }
 
 function parseAndValidatePlan(content: string, doc?: DocumentIR): Plan {
@@ -576,10 +619,12 @@ function parseAndValidatePlan(content: string, doc?: DocumentIR): Plan {
   }
   const raw = candidate as {
     taskId?: unknown;
+    task_id?: unknown;
     goal?: unknown;
     steps?: unknown;
   };
-  if (!isNonEmptyString(raw.taskId) || !isNonEmptyString(raw.goal) || !Array.isArray(raw.steps)) {
+  const taskId = pickNonEmptyStringValue(raw.taskId, raw.task_id);
+  if (!taskId || !isNonEmptyString(raw.goal) || !Array.isArray(raw.steps)) {
     throw new AgentError({
       code: "E_PLANNER_PLAN_INVALID",
       message: "Planner plan must include non-empty taskId, goal, and steps[].",
@@ -617,8 +662,8 @@ function parseAndValidatePlan(content: string, doc?: DocumentIR): Plan {
   }
 
   return {
-    taskId: raw.taskId,
-    goal: raw.goal,
+    taskId,
+    goal: raw.goal.trim(),
     steps
   };
 }
@@ -629,37 +674,51 @@ function parseStep(step: unknown, idx: number, targetContext?: TargetContext): P
   }
   const raw = step as {
     id?: unknown;
+    stepId?: unknown;
     toolName?: unknown;
+    tool_name?: unknown;
+    tool?: unknown;
     readOnly?: unknown;
+    read_only?: unknown;
     timeoutMs?: unknown;
+    timeout_ms?: unknown;
     retryLimit?: unknown;
+    retry_limit?: unknown;
     idempotencyKey?: unknown;
+    idempotency_key?: unknown;
     operation?: unknown;
   };
-  const stepId = isNonEmptyString(raw.id) ? raw.id.trim() : `step_${idx}`;
-  if (!isNonEmptyString(raw.toolName)) throw invalidStep(idx, "toolName is required");
-  if (typeof raw.readOnly !== "boolean") throw invalidStep(idx, "readOnly must be boolean");
-  const idempotencyKey = isNonEmptyString(raw.idempotencyKey)
-    ? raw.idempotencyKey.trim()
-    : `auto:${stepId}`;
-  if (raw.timeoutMs !== undefined && !isNonNegativeNumber(raw.timeoutMs)) {
-    throw invalidStep(idx, "timeoutMs must be a non-negative number");
+  const stepId = pickNonEmptyStringValue(raw.id, raw.stepId) ?? `step_${idx}`;
+  const toolName = pickNonEmptyStringValue(raw.toolName, raw.tool_name, raw.tool);
+  if (!toolName) throw invalidStep(idx, "toolName is required");
+  const readOnly = normalizeLooseBoolean(raw.readOnly, raw.read_only);
+  if (typeof readOnly !== "boolean") throw invalidStep(idx, "readOnly must be boolean");
+  const idempotencyKey =
+    pickNonEmptyStringValue(raw.idempotencyKey, raw.idempotency_key) ?? `auto:${stepId}`;
+  const timeoutMs = normalizeLooseNumber(raw.timeoutMs, raw.timeout_ms);
+  if (raw.timeoutMs !== undefined || raw.timeout_ms !== undefined) {
+    if (!isNonNegativeNumber(timeoutMs)) {
+      throw invalidStep(idx, "timeoutMs must be a non-negative number");
+    }
   }
-  if (raw.retryLimit !== undefined && !isNonNegativeNumber(raw.retryLimit)) {
-    throw invalidStep(idx, "retryLimit must be a non-negative number");
+  const retryLimit = normalizeLooseNumber(raw.retryLimit, raw.retry_limit);
+  if (raw.retryLimit !== undefined || raw.retry_limit !== undefined) {
+    if (!isNonNegativeNumber(retryLimit)) {
+      throw invalidStep(idx, "retryLimit must be a non-negative number");
+    }
   }
-  if (raw.toolName === "write_operation" && raw.operation === undefined) {
+  if (toolName === "write_operation" && raw.operation === undefined) {
     throw invalidStep(idx, "write_operation requires operation");
   }
 
   return {
     id: stepId,
-    toolName: raw.toolName,
-    readOnly: raw.readOnly,
-    timeoutMs: raw.timeoutMs as number | undefined,
-    retryLimit: raw.retryLimit as number | undefined,
+    toolName,
+    readOnly,
     idempotencyKey,
-    operation: raw.operation === undefined ? undefined : parseOperation(raw.operation, idx, stepId, targetContext)
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(retryLimit !== undefined ? { retryLimit } : {}),
+    ...(raw.operation !== undefined ? { operation: parseOperation(raw.operation, idx, stepId, targetContext) } : {})
   };
 }
 
@@ -667,19 +726,29 @@ function parseOperation(op: unknown, idx: number, stepId: string, targetContext?
   if (!op || typeof op !== "object") throw invalidStep(idx, "operation must be an object");
   const raw = op as {
     id?: unknown;
+    operationId?: unknown;
+    operation_id?: unknown;
     type?: unknown;
     targetNodeId?: unknown;
+    target_node_id?: unknown;
+    targetNodeIds?: unknown;
+    target_node_ids?: unknown;
     targetSelector?: unknown;
+    target_selector?: unknown;
+    selector?: unknown;
     payload?: unknown;
   };
-  const operationId = isNonEmptyString(raw.id) ? raw.id.trim() : `${stepId}_op`;
+  const operationType = normalizeOperationType(raw.type);
+  const operationId = pickNonEmptyStringValue(raw.id, raw.operationId, raw.operation_id) ?? `${stepId}_op`;
   if (!isObject(raw.payload)) throw invalidStep(idx, "operation.payload must be an object");
-  if (!isNonEmptyString(raw.type) || !OPERATION_TYPES.has(raw.type as OperationType)) {
+  if (!operationType) {
     throw invalidStep(idx, "operation.type is invalid");
   }
-  const targetNodeId = isNonEmptyString(raw.targetNodeId) ? raw.targetNodeId.trim() : undefined;
-  const targetSelector = raw.targetSelector === undefined ? undefined : parseTargetSelector(raw.targetSelector, idx);
-  if (!targetNodeId && !targetSelector) {
+  const targetNodeId = pickNonEmptyStringValue(raw.targetNodeId, raw.target_node_id);
+  const targetNodeIds = normalizeTargetNodeIds(raw.targetNodeIds, raw.target_node_ids);
+  const selectorInput = firstDefined(raw.targetSelector, raw.target_selector, raw.selector);
+  const targetSelector = selectorInput === undefined ? undefined : parseTargetSelector(selectorInput, idx);
+  if (!targetNodeId && !targetNodeIds?.length && !targetSelector) {
     throw invalidStep(idx, "operation.targetNodeId or operation.targetSelector is required");
   }
   if (targetNodeId && isPlaceholderTargetId(targetNodeId)) {
@@ -688,14 +757,25 @@ function parseOperation(op: unknown, idx: number, stepId: string, targetContext?
   if (targetNodeId && targetContext && !targetContext.nodeIds.has(targetNodeId)) {
     throw invalidStep(idx, `operation.targetNodeId must match an existing document node id: ${targetNodeId}`);
   }
-  validateExecutableTarget(idx, raw.type as OperationType, targetSelector, targetContext);
-  validateExecutablePayload(idx, raw.type as OperationType, raw.payload);
+  if (targetNodeIds?.length) {
+    for (const concreteTargetId of targetNodeIds) {
+      if (isPlaceholderTargetId(concreteTargetId)) {
+        throw invalidStep(idx, `operation.targetNodeIds must not use placeholder ids like '${concreteTargetId}'`);
+      }
+      if (targetContext && !targetContext.nodeIds.has(concreteTargetId)) {
+        throw invalidStep(idx, `operation.targetNodeIds must match existing document node ids: ${concreteTargetId}`);
+      }
+    }
+  }
+  validateExecutableTarget(idx, operationType, targetSelector, targetContext);
+  const payload = normalizeCompatiblePayload(idx, operationType, raw.payload);
   return {
     id: operationId,
-    type: raw.type as OperationType,
-    targetNodeId,
-    targetSelector,
-    payload: raw.payload as Record<string, unknown>
+    type: operationType,
+    ...(targetNodeId ? { targetNodeId } : {}),
+    ...(targetNodeIds?.length ? { targetNodeIds } : {}),
+    ...(targetSelector ? { targetSelector } : {}),
+    payload
   };
 }
 
@@ -706,30 +786,33 @@ function parseTargetSelector(value: unknown, idx: number): NodeSelector {
   const raw = value as {
     scope?: unknown;
     headingLevel?: unknown;
+    heading_level?: unknown;
     paragraphIds?: unknown;
+    paragraph_ids?: unknown;
   };
-  if (!isNonEmptyString(raw.scope)) {
+  const scope = normalizeSelectorScope(raw.scope);
+  if (!scope) {
     throw invalidStep(idx, "operation.targetSelector.scope is required");
   }
-  const scope = raw.scope.trim() as NodeSelector["scope"];
-  if (!["body", "heading", "list_item", "all_text", "paragraph_ids"].includes(scope)) {
-    throw invalidStep(idx, "operation.targetSelector.scope is invalid");
-  }
-  if (raw.headingLevel !== undefined && !isNonNegativeNumber(raw.headingLevel)) {
+  const headingLevel = normalizeLooseNumber(raw.headingLevel, raw.heading_level);
+  if ((raw.headingLevel !== undefined || raw.heading_level !== undefined) && !isNonNegativeNumber(headingLevel)) {
     throw invalidStep(idx, "operation.targetSelector.headingLevel must be a non-negative number");
   }
-  if (raw.paragraphIds !== undefined) {
-    if (!Array.isArray(raw.paragraphIds) || raw.paragraphIds.some((item) => !isNonEmptyString(item))) {
-      throw invalidStep(idx, "operation.targetSelector.paragraphIds must be a string array");
-    }
+  const paragraphIds = normalizeParagraphIds(raw.paragraphIds, raw.paragraph_ids);
+  if (
+    (raw.paragraphIds !== undefined || raw.paragraph_ids !== undefined) &&
+    !paragraphIds?.length &&
+    scope !== "paragraph_ids"
+  ) {
+    throw invalidStep(idx, "operation.targetSelector.paragraphIds must be a string array");
   }
-  if (scope === "paragraph_ids" && (!Array.isArray(raw.paragraphIds) || raw.paragraphIds.length === 0)) {
+  if (scope === "paragraph_ids" && !paragraphIds?.length) {
     throw invalidStep(idx, "operation.targetSelector.paragraphIds is required for paragraph_ids scope");
   }
   return {
     scope,
-    headingLevel: raw.headingLevel as number | undefined,
-    paragraphIds: raw.paragraphIds as string[] | undefined
+    headingLevel: headingLevel as number | undefined,
+    paragraphIds
   };
 }
 
@@ -820,6 +903,24 @@ function validateExecutableTarget(
   }
 }
 
+function normalizeCompatiblePayload(
+  idx: number,
+  operationType: OperationType,
+  payload: Record<string, unknown>
+): Record<string, unknown> {
+  try {
+    const normalized = normalizeWriteOperationPayload({
+      id: "compat",
+      type: operationType,
+      payload
+    });
+    return isCanonicalPayload(operationType, payload) ? payload : normalized;
+  } catch {
+    validateExecutablePayload(idx, operationType, payload);
+    return payload;
+  }
+}
+
 function validateExecutablePayload(idx: number, operationType: OperationType, payload: unknown): void {
   if (!isObject(payload)) {
     throw invalidStep(idx, "operation.payload must be an object");
@@ -871,6 +972,171 @@ function validateExecutablePayload(idx: number, operationType: OperationType, pa
 function isPlaceholderTargetId(value: string): boolean {
   const normalized = value.trim().toLowerCase();
   return ["placeholder", "unused", "target", "todo", "tbd"].includes(normalized);
+}
+
+function normalizeOperationType(value: unknown): OperationType | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  return OPERATION_TYPES.has(normalized as OperationType) ? (normalized as OperationType) : undefined;
+}
+
+function normalizeSelectorScope(value: unknown): NodeSelector["scope"] | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return ["body", "heading", "list_item", "all_text", "paragraph_ids"].includes(normalized)
+    ? (normalized as NodeSelector["scope"])
+    : undefined;
+}
+
+function normalizeTargetNodeIds(...values: unknown[]): string[] | undefined {
+  for (const value of values) {
+    const normalized = normalizeParagraphIds(value);
+    if (normalized?.length) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function normalizeParagraphIds(...values: unknown[]): string[] | undefined {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const normalized = Array.from(
+        new Set(
+          value
+            .filter((item): item is string => typeof item === "string")
+            .map((item) => item.trim())
+            .filter((item) => item.length > 0)
+        )
+      );
+      if (normalized.length > 0) {
+        return normalized;
+      }
+      continue;
+    }
+    if (typeof value === "string") {
+      const normalized = value
+        .split(",")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+      if (normalized.length > 0) {
+        return Array.from(new Set(normalized));
+      }
+    }
+  }
+  return undefined;
+}
+
+function normalizeLooseBoolean(...values: unknown[]): boolean | undefined {
+  for (const value of values) {
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "number" && (value === 0 || value === 1)) {
+      return value === 1;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "true" || normalized === "1") {
+        return true;
+      }
+      if (normalized === "false" || normalized === "0") {
+        return false;
+      }
+    }
+  }
+  return undefined;
+}
+
+function normalizeLooseNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value.trim());
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function pickNonEmptyStringValue(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function firstDefined<T>(...values: T[]): T | undefined {
+  return values.find((value) => value !== undefined);
+}
+
+function isCanonicalPayload(operationType: OperationType, payload: Record<string, unknown>): boolean {
+  if (operationType === "merge_paragraph") {
+    return Object.keys(payload).length === 0;
+  }
+  if (operationType === "set_font") {
+    return (
+      (typeof payload.font_name === "string" && payload.font_name.trim().length > 0) ||
+      (typeof payload.fontName === "string" && payload.fontName.trim().length > 0)
+    );
+  }
+  if (operationType === "set_size") {
+    return (
+      (typeof payload.font_size_pt === "number" && Number.isFinite(payload.font_size_pt) && payload.font_size_pt > 0) ||
+      (typeof payload.fontSizePt === "number" && Number.isFinite(payload.fontSizePt) && payload.fontSizePt > 0) ||
+      (typeof payload.fontSize === "number" && Number.isFinite(payload.fontSize) && payload.fontSize > 0)
+    );
+  }
+  if (operationType === "set_alignment") {
+    return (
+      (typeof payload.paragraph_alignment === "string" && payload.paragraph_alignment.trim().length > 0) ||
+      (typeof payload.alignment === "string" && payload.alignment.trim().length > 0)
+    );
+  }
+  if (operationType === "set_font_color") {
+    return (
+      (typeof payload.font_color === "string" && /^[0-9A-F]{6}$/.test(payload.font_color.trim())) ||
+      (typeof payload.fontColor === "string" && /^[0-9A-F]{6}$/.test(payload.fontColor.trim()))
+    );
+  }
+  if (operationType === "set_highlight_color") {
+    return (
+      (typeof payload.highlight_color === "string" && payload.highlight_color.trim().length > 0) ||
+      (typeof payload.highlightColor === "string" && payload.highlightColor.trim().length > 0)
+    );
+  }
+  if (operationType === "split_paragraph") {
+    return (
+      (typeof payload.split_offset === "number" && Number.isInteger(payload.split_offset) && payload.split_offset > 0) ||
+      (typeof payload.splitOffset === "number" && Number.isInteger(payload.splitOffset) && payload.splitOffset > 0)
+    );
+  }
+  if (operationType === "set_bold") {
+    return typeof payload.is_bold === "boolean" || typeof payload.isBold === "boolean";
+  }
+  if (operationType === "set_italic") {
+    return typeof payload.is_italic === "boolean" || typeof payload.isItalic === "boolean";
+  }
+  if (operationType === "set_underline") {
+    return typeof payload.is_underline === "boolean" || typeof payload.isUnderline === "boolean";
+  }
+  if (operationType === "set_strike") {
+    return typeof payload.is_strike === "boolean" || typeof payload.isStrike === "boolean";
+  }
+  if (operationType === "set_all_caps") {
+    return typeof payload.is_all_caps === "boolean" || typeof payload.isAllCaps === "boolean";
+  }
+  return false;
 }
 
 function hasNonEmptyString(payload: Record<string, unknown>, keys: string[]): boolean {
@@ -935,6 +1201,20 @@ function pickNumber(...values: Array<number | string | undefined>): number | und
   return undefined;
 }
 
+function pickOptionalNumber(...values: Array<number | string | null | undefined>): number | undefined {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") {
+      continue;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
+}
+
 function pickBoolean(...values: Array<boolean | string | undefined>): boolean | undefined {
   for (const value of values) {
     if (typeof value === "boolean") {
@@ -988,6 +1268,41 @@ function resolvePlannerCompatMode(
   env: NodeJS.ProcessEnv
 ): PlannerCompatMode {
   return pickCompatMode(override.compatMode, env.TS_AGENT_PLANNER_COMPAT_MODE, "auto") ?? "auto";
+}
+
+function resolveRequestTimeoutControl(
+  configuredTimeoutMs: number | undefined,
+  requestTimeoutMs: number | undefined,
+  messages: {
+    requestTimeoutCode: string;
+    requestTimeoutMessage: string;
+    taskTimeoutMessage: string;
+  }
+): {
+  timeoutMs: number;
+  budgetClipped: boolean;
+  toTimeoutError: (cause?: unknown) => AgentError;
+} {
+  const baseTimeoutMs = configuredTimeoutMs ?? 30000;
+  const budgetClipped =
+    typeof requestTimeoutMs === "number" && Number.isFinite(requestTimeoutMs) && requestTimeoutMs < baseTimeoutMs;
+  const timeoutMs =
+    typeof requestTimeoutMs === "number" && Number.isFinite(requestTimeoutMs)
+      ? Math.max(0, Math.min(baseTimeoutMs, requestTimeoutMs))
+      : baseTimeoutMs;
+  return {
+    timeoutMs,
+    budgetClipped,
+    toTimeoutError: (cause?: unknown) =>
+      new AgentError({
+        code: budgetClipped ? "E_TASK_TIMEOUT" : messages.requestTimeoutCode,
+        message: budgetClipped
+          ? messages.taskTimeoutMessage
+          : `${messages.requestTimeoutMessage} after ${timeoutMs}ms.`,
+        retryable: false,
+        cause
+      })
+  };
 }
 
 function isNonNegativeNumber(value: unknown): value is number {

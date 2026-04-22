@@ -1,7 +1,7 @@
 import React, { useRef, useState, KeyboardEvent, ChangeEvent } from 'react';
 
 interface InputAreaProps {
-  onSendMessage: (text: string) => boolean | Promise<boolean>;
+  onSendMessage: (text: string) => void | Promise<void>;
   onUploadDocument: (file: File) => void | Promise<void>;
   disabled: boolean;
   isUploading: boolean;
@@ -44,13 +44,11 @@ export const InputArea: React.FC<InputAreaProps> = ({
     if (disabled || (!trimmedText && !pendingFileName)) {
       return;
     }
-    const shouldClear = await onSendMessage(trimmedText);
-    if (shouldClear) {
-      setText('');
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
+    setText('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
     }
+    await onSendMessage(trimmedText);
   };
 
   const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {

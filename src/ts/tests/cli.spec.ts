@@ -7,6 +7,7 @@ import { SESSION_COMMAND_TYPES, runCli, runCliWithDeps } from "../src/runtime/cl
 import { SqliteTaskAuditStore } from "../src/runtime/audit/sqlite-task-audit-store.js";
 import type { DocumentIR, ExecutionResult, Plan } from "../src/core/types.js";
 import { AgentSessionService } from "../src/runtime/session-service.js";
+import { SqliteAgentStateStore } from "../src/runtime/state/sqlite-agent-state-store.js";
 
 const tempDirs: string[] = [];
 
@@ -181,6 +182,76 @@ describe("runtime cli", () => {
     expect(output.turns?.length).toBe(1);
     expect(output.turns?.[0]?.thought).toBe("inspect");
     expect(output.turns?.[0]?.observation).toBe("ok");
+  });
+
+  it("supports turn-run status query mode", async () => {
+    const dir = await makeTempDir();
+    const inputPath = path.join(dir, "in-turn-run-query.json");
+    const outputPath = path.join(dir, "out-turn-run-query.json");
+    const stateDbPath = path.join(dir, "state.db");
+
+    const store = new SqliteAgentStateStore({ dbPath: stateDbPath });
+    const service = new AgentSessionService({
+      store,
+      modelGateway: {
+        decideTurn: async () => ({
+          mode: "chat",
+          goal: "answer the user",
+          requiresDocument: false,
+          needsClarification: false,
+          clarificationKind: "none",
+          clarificationReason: ""
+        }),
+        respondToConversation: async () => "已完成",
+        respondToDocumentObservation: async () => "unused",
+        respondToClarification: async () => "unused"
+      },
+      runtimeFactory: () => {
+        throw new Error("not used");
+      },
+      observeDocument: async () => ({
+        document_meta: { total_paragraphs: 0, total_tables: 0 },
+        nodes: []
+      })
+    });
+
+    try {
+      await service.submitUserTurn({
+        sessionId: "chat-main",
+        userInput: "查询最新运行状态"
+      });
+    } finally {
+      store.close();
+    }
+
+    await writeFile(
+      inputPath,
+      JSON.stringify(
+        {
+          command: {
+            type: "get_turn_run_status",
+            sessionId: "chat-main"
+          },
+          runtimeOptions: {
+            stateDbPath
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const code = await runCli(["--input-json", inputPath, "--output-json", outputPath]);
+    expect(code).toBe(0);
+
+    const output = JSON.parse(await readFile(outputPath, "utf8")) as {
+      turnRun?: { sessionId?: string; status?: string; mode?: string; steps?: Array<{ id?: string }> };
+    };
+    expect(output.turnRun?.sessionId).toBe("chat-main");
+    expect(output.turnRun?.status).toBe("completed");
+    expect(output.turnRun?.mode).toBe("chat");
+    expect(output.turnRun?.steps?.map((step) => step.id)).toEqual(["decide_mode", "generate_reply"]);
   });
 
   it("hydrates document nodes from inputDocxPath before execution", async () => {
@@ -550,6 +621,7 @@ describe("runtime cli", () => {
       "submit_turn",
       "attach_document",
       "get_session",
+      "get_turn_run_status",
       "update_session",
       "delete_session"
     ]);

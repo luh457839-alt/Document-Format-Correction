@@ -66,7 +66,22 @@ export function expandPlanSelectors(plan: Plan, doc: DocumentIR): Plan {
         operation: {
           ...step.operation,
           targetNodeId: targetIds[0],
-          targetSelector: undefined
+          targetSelector: undefined,
+          sourceTargetSelector: step.operation.targetSelector
+        }
+      });
+      continue;
+    }
+
+    if (isBatchableWriteOperation(step)) {
+      expandedSteps.push({
+        ...step,
+        operation: {
+          ...step.operation,
+          targetNodeId: undefined,
+          targetNodeIds: targetIds,
+          targetSelector: undefined,
+          sourceTargetSelector: step.operation.targetSelector
         }
       });
       continue;
@@ -81,7 +96,9 @@ export function expandPlanSelectors(plan: Plan, doc: DocumentIR): Plan {
           ...step.operation!,
           id: `${step.operation!.id}__${index + 1}`,
           targetNodeId: targetId,
-          targetSelector: undefined
+          targetNodeIds: undefined,
+          targetSelector: undefined,
+          sourceTargetSelector: step.operation!.targetSelector
         }
       }))
     );
@@ -91,6 +108,13 @@ export function expandPlanSelectors(plan: Plan, doc: DocumentIR): Plan {
     ...plan,
     steps: expandedSteps
   };
+}
+
+function isBatchableWriteOperation(step: PlanStep): boolean {
+  if (step.toolName !== "write_operation" || !step.operation) {
+    return false;
+  }
+  return step.operation.type !== "merge_paragraph" && step.operation.type !== "split_paragraph";
 }
 
 function readStructureIndex(doc: DocumentIR): DocumentStructureIndex | undefined {

@@ -118,6 +118,26 @@ class TsAgentBridgeCommandHelpersTest(unittest.TestCase):
                 with self.assertRaises(TsAgentBridgeTimeout):
                     create_session("chat-main", options=options, timeout_sec=1)
 
+    def test_command_helpers_allow_background_call_without_timeout(self) -> None:
+        with self._tempdir() as tmp:
+            root = Path(tmp)
+            options = self._make_options(root)
+
+            def fake_run(*args, **kwargs):  # noqa: ANN001
+                self.assertIsNone(kwargs.get("timeout"))
+                cmd = args[0]
+                output_path = Path(cmd[5])
+                output_path.write_text(
+                    json.dumps({"session": {"sessionId": "chat-main", "turns": []}}),
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(returncode=0, stderr="")
+
+            with patch("src.python.api.ts_agent_bridge.subprocess.run", side_effect=fake_run):
+                result = create_session("chat-main", options=options, timeout_sec=None)
+
+            self.assertEqual(result["session"]["sessionId"], "chat-main")
+
 
 if __name__ == "__main__":
     unittest.main()

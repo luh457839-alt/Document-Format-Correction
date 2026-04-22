@@ -1,7 +1,11 @@
 import { AgentError, asAppError } from "../core/errors.js";
 import { summarizeChangeSet } from "../diff/summary.js";
 import { DefaultExecutor } from "../executor/default-executor.js";
-import { LlmPlanner, resolvePlannerRuntimeMode } from "../planner/llm-planner.js";
+import {
+  LlmPlanner,
+  resolvePlannerRuntimeMode,
+  resolvePlannerRuntimeTuning
+} from "../planner/llm-planner.js";
 import { LlmReActPlanner } from "../planner/llm-react-planner.js";
 import { WriteOperationTool } from "../tools/mock-tools.js";
 import { materializeDocumentWithPython } from "../tools/python-tool-client.js";
@@ -42,6 +46,7 @@ export type RuntimeMode = "react_loop" | "plan_once";
 export interface RuntimeRunOptions extends ExecutorOptions {
   runtimeMode?: RuntimeMode;
   maxTurns?: number;
+  taskTimeoutMs?: number | null;
   taskId?: string;
   sessionContext?: ConversationMessage[];
 }
@@ -56,6 +61,8 @@ export interface RuntimeDeps {
   auditConfig?: Partial<AuditStoreConfig>;
   runtimeMode?: RuntimeMode;
   defaultMaxTurns?: number;
+  defaultTimeoutMs?: number;
+  taskTimeoutMs?: number | null;
   useMockWriteTool?: boolean;
   pythonBin?: string;
   pythonToolRunnerPath?: string;
@@ -70,16 +77,33 @@ export class AgentRuntime {
     private readonly auditStore?: TaskAuditStore,
     private readonly reactPlanner?: ReActPlanner,
     private readonly defaultRuntimeMode: RuntimeMode = "plan_once",
-    private readonly defaultMaxTurns = 8,
+    private readonly defaultMaxTurns = 24,
+    private readonly defaultTimeoutMs = 60000,
+    private readonly defaultTaskTimeoutMs: number | null = null,
     private readonly materializeDocument?: (doc: DocumentIR) => Promise<{ summary: string }>
   ) {}
 
   async run(goal: string, doc: DocumentIR, options?: RuntimeRunOptions): Promise<ExecutionResult> {
     const mode = options?.runtimeMode ?? this.defaultRuntimeMode;
-    if (mode === "react_loop") {
-      return await this.runReActLoop(goal, doc, options);
+    const taskBudget = createTaskBudget(options?.taskTimeoutMs ?? this.defaultTaskTimeoutMs);
+    try {
+      if (mode === "react_loop") {
+        return await this.runReActLoop(goal, doc, options, taskBudget);
+      }
+      return await this.runPlanOnce(goal, doc, options, taskBudget);
+    } catch (err) {
+      const appErr = asAppError(err, "E_RUNTIME_FAILED");
+      if (appErr.code === "E_TASK_TIMEOUT") {
+        return {
+          status: "failed",
+          finalDoc: structuredClone(doc),
+          changeSet: { taskId: options?.taskId ?? `task_${doc.id}`, changes: [], rolledBack: false },
+          steps: [],
+          summary: appErr.message
+        };
+      }
+      throw err;
     }
-    return await this.runPlanOnce(goal, doc, options);
   }
 
   async runSingleStep(
@@ -176,7 +200,8 @@ export class AgentRuntime {
   private async runPlanOnce(
     goal: string,
     doc: DocumentIR,
-    options?: RuntimeRunOptions
+    options: RuntimeRunOptions | undefined,
+    taskBudget: TaskBudget
   ): Promise<ExecutionResult> {
     if (!this.planner) {
       throw new AgentError({
@@ -185,8 +210,18 @@ export class AgentRuntime {
         retryable: false
       });
     }
-    const plan = expandPlanSelectors(await this.planner.createPlan(goal, doc), doc);
-    return await this.runConcretePlan(plan, doc, options);
+    ensureTaskBudgetAvailable(taskBudget, "planner request");
+    const plan = expandPlanSelectors(
+      await this.planner.createPlan(goal, doc, {
+        timeoutMs: readRemainingBudgetMs(taskBudget)
+      }),
+      doc
+    );
+    return await this.runConcretePlan(
+      plan,
+      doc,
+      withRuntimeBudgetOptions(options, taskBudget, this.defaultTimeoutMs)
+    );
   }
 
   private async runConcretePlan(
@@ -214,6 +249,12 @@ export class AgentRuntime {
       await this.validator.preValidate(concretePlan, doc);
       const result = await this.executor.execute(concretePlan, doc, mergedOptions);
       latestDoc = result.finalDoc;
+      if (result.status !== "completed") {
+        if (runId && this.auditStore) {
+          await this.auditStore.finalizeRun(runId, concretePlan, result);
+        }
+        return result;
+      }
       await this.validator.postValidate(result.changeSet, result.finalDoc);
       const materializeSummary = materializeOnCompletion
         ? await this.materializeFinalDocumentIfNeeded(result.finalDoc, mergedOptions)
@@ -237,7 +278,8 @@ export class AgentRuntime {
   private async runReActLoop(
     goal: string,
     initialDoc: DocumentIR,
-    options?: RuntimeRunOptions
+    options: RuntimeRunOptions | undefined,
+    taskBudget: TaskBudget
   ): Promise<ExecutionResult> {
     if (!this.reactPlanner) {
       throw new AgentError({
@@ -265,6 +307,7 @@ export class AgentRuntime {
         }
       }
     };
+    const budgetedOptions = withRuntimeBudgetOptions(mergedOptions, taskBudget, this.defaultTimeoutMs);
 
     const trace: ReActTraceItem[] = [];
     const steps = [];
@@ -273,17 +316,19 @@ export class AgentRuntime {
 
     try {
       for (let turn = 0; turn < maxTurns; turn += 1) {
+        ensureTaskBudgetAvailable(taskBudget, `ReAct planner turn ${turn + 1}`);
         const decision = await this.reactPlanner.decideNext({
           taskId,
           goal,
           turnIndex: turn,
           doc,
           history: trace,
-          sessionContext: options?.sessionContext
+          sessionContext: options?.sessionContext,
+          requestTimeoutMs: readRemainingBudgetMs(taskBudget)
         });
 
         if (decision.kind === "finish") {
-          const materializeSummary = await this.materializeFinalDocumentIfNeeded(doc, mergedOptions);
+          const materializeSummary = await this.materializeFinalDocumentIfNeeded(doc, budgetedOptions);
           const result: ExecutionResult = {
             status: "completed",
             finalDoc: doc,
@@ -308,7 +353,7 @@ export class AgentRuntime {
         };
         const concreteStepPlan = expandPlanSelectors(singleStepPlan, doc);
         await this.validator.preValidate(concreteStepPlan, doc);
-        const stepRun = await this.executor.execute(concreteStepPlan, doc, mergedOptions);
+        const stepRun = await this.executor.execute(concreteStepPlan, doc, budgetedOptions);
         await this.validator.postValidate(stepRun.changeSet, stepRun.finalDoc);
 
         steps.push(...stepRun.steps);
@@ -382,19 +427,25 @@ export class AgentRuntime {
 }
 
 export function createMvpRuntime(deps: RuntimeDeps = {}): AgentRuntime {
+  const runtimeTuning = resolvePlannerRuntimeTuning(deps.plannerConfig);
+  const defaultTimeoutMs = deps.defaultTimeoutMs ?? runtimeTuning.stepTimeoutMs ?? 60000;
+  const taskTimeoutMs =
+    deps.taskTimeoutMs !== undefined ? deps.taskTimeoutMs : runtimeTuning.taskTimeoutMs ?? null;
+  const pythonToolTimeoutMs =
+    deps.pythonToolTimeoutMs ?? runtimeTuning.pythonToolTimeoutMs ?? defaultTimeoutMs;
   const registry = new InMemoryToolRegistry();
   registry.register(
     buildInspectDocumentTool({
       pythonBin: deps.pythonBin,
       runnerPath: deps.pythonToolRunnerPath,
-      timeoutMs: deps.pythonToolTimeoutMs
+      timeoutMs: pythonToolTimeoutMs
     })
   );
   registry.register(
     buildDocxObservationTool({
       pythonBin: deps.pythonBin,
       runnerPath: deps.pythonToolRunnerPath,
-      timeoutMs: deps.pythonToolTimeoutMs
+      timeoutMs: pythonToolTimeoutMs
     })
   );
   registry.register(
@@ -403,7 +454,7 @@ export function createMvpRuntime(deps: RuntimeDeps = {}): AgentRuntime {
       : buildWriteOperationTool({
           pythonBin: deps.pythonBin,
           runnerPath: deps.pythonToolRunnerPath,
-          timeoutMs: deps.pythonToolTimeoutMs
+          timeoutMs: pythonToolTimeoutMs
         })
   );
 
@@ -431,16 +482,59 @@ export function createMvpRuntime(deps: RuntimeDeps = {}): AgentRuntime {
     auditStore,
     reactPlanner,
     defaultMode,
-    deps.defaultMaxTurns ?? 8,
+    deps.defaultMaxTurns ?? runtimeTuning.maxTurns ?? 24,
+    defaultTimeoutMs,
+    taskTimeoutMs,
     deps.useMockWriteTool
       ? undefined
       : async (doc: DocumentIR) =>
           await materializeDocumentWithPython(doc, {
             pythonBin: deps.pythonBin,
             runnerPath: deps.pythonToolRunnerPath,
-            timeoutMs: deps.pythonToolTimeoutMs
+            timeoutMs: pythonToolTimeoutMs
           })
   );
+}
+
+interface TaskBudget {
+  deadlineMs?: number;
+}
+
+function createTaskBudget(taskTimeoutMs: number | null | undefined): TaskBudget {
+  if (typeof taskTimeoutMs === "number" && Number.isFinite(taskTimeoutMs) && taskTimeoutMs >= 0) {
+    return { deadlineMs: Date.now() + taskTimeoutMs };
+  }
+  return {};
+}
+
+function readRemainingBudgetMs(taskBudget: TaskBudget): number | undefined {
+  if (typeof taskBudget.deadlineMs !== "number") {
+    return undefined;
+  }
+  return Math.max(0, taskBudget.deadlineMs - Date.now());
+}
+
+function ensureTaskBudgetAvailable(taskBudget: TaskBudget, phase: string): void {
+  const remainingBudgetMs = readRemainingBudgetMs(taskBudget);
+  if (remainingBudgetMs !== undefined && remainingBudgetMs <= 0) {
+    throw new AgentError({
+      code: "E_TASK_TIMEOUT",
+      message: `Task budget exceeded before ${phase}.`,
+      retryable: false
+    });
+  }
+}
+
+function withRuntimeBudgetOptions(
+  options: ExecutorOptions | undefined,
+  taskBudget: TaskBudget,
+  defaultTimeoutMs: number
+): ExecutorOptions {
+  return {
+    ...options,
+    defaultTimeoutMs: options?.defaultTimeoutMs ?? defaultTimeoutMs,
+    ...(typeof taskBudget.deadlineMs === "number" ? { budgetDeadlineMs: taskBudget.deadlineMs } : {})
+  };
 }
 
 function readOutputDocxPath(doc: DocumentIR): string | undefined {

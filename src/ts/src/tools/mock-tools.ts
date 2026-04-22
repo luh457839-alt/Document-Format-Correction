@@ -43,32 +43,32 @@ export class WriteOperationTool implements Tool {
   async execute(input: ToolExecutionInput): Promise<ToolExecutionOutput> {
     const next = cloneDoc(input.doc);
     const op = input.operation!;
-    const targetNodeId = op.targetNodeId;
-    if (!targetNodeId) {
+    const targetNodeIds = readTargetNodeIds(op);
+    if (targetNodeIds.length === 0) {
       throw new AgentError({
         code: "E_INVALID_OPERATION",
-        message: "Write operation requires targetNodeId after selector expansion.",
+        message: "Write operation requires targetNodeId or targetNodeIds after selector expansion.",
         retryable: false
       });
     }
     const normalizedStyle = normalizeWriteOperationPayload(op);
     if (!input.context.dryRun) {
-      const target = next.nodes.find((n) => n.id === targetNodeId);
-      if (!target) {
-        throw new AgentError({
-          code: "E_TARGET_NOT_FOUND",
-          message: `Target node not found: ${targetNodeId}`,
-          retryable: false
-        });
+      for (const targetNodeId of targetNodeIds) {
+        const target = next.nodes.find((n) => n.id === targetNodeId);
+        if (!target) {
+          throw new AgentError({
+            code: "E_TARGET_NOT_FOUND",
+            message: `Target node not found: ${targetNodeId}`,
+            retryable: false
+          });
+        }
+        target.style = { ...(target.style ?? {}), ...normalizedStyle, operation: op.type };
       }
-      target.style = { ...(target.style ?? {}), ...normalizedStyle, operation: op.type };
     }
 
     return {
       doc: next,
-      summary: input.context.dryRun
-        ? `Dry-run: ${op.type} skipped write.`
-        : `Applied ${op.type} to ${targetNodeId}.`,
+      summary: buildWriteOperationSummary(op.type, targetNodeIds, input.context.dryRun),
       rollbackToken: `rb_${input.context.stepId}`
     };
   }
@@ -78,4 +78,20 @@ export class WriteOperationTool implements Tool {
     next.metadata = { ...(next.metadata ?? {}), lastRollbackToken: rollbackToken };
     return next;
   }
+}
+
+function readTargetNodeIds(input: NonNullable<ToolExecutionInput["operation"]>): string[] {
+  if (Array.isArray(input.targetNodeIds) && input.targetNodeIds.length > 0) {
+    return input.targetNodeIds;
+  }
+  return input.targetNodeId ? [input.targetNodeId] : [];
+}
+
+function buildWriteOperationSummary(operationType: string, targetNodeIds: string[], dryRun: boolean): string {
+  if (targetNodeIds.length === 1) {
+    return dryRun ? `Dry-run: ${operationType} prepared for ${targetNodeIds[0]}.` : `Applied ${operationType} to ${targetNodeIds[0]}.`;
+  }
+  return dryRun
+    ? `Dry-run: ${operationType} prepared for ${targetNodeIds.length} nodes.`
+    : `Applied ${operationType} to ${targetNodeIds.length} nodes.`;
 }

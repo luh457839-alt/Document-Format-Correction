@@ -64,6 +64,12 @@ function createEnvelope(content: string): string {
   });
 }
 
+function createChoiceEnvelope(message: Record<string, unknown>, choice: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    choices: [{ ...choice, message }]
+  });
+}
+
 function createFetchMock(payload: string, status = 200): typeof fetch {
   return (async () =>
     ({
@@ -74,7 +80,7 @@ function createFetchMock(payload: string, status = 200): typeof fetch {
 }
 
 function createSequentialFetchSpy(
-  responses: Array<{ content: string; status?: number }>
+  responses: Array<{ content?: string; rawPayload?: string; status?: number }>
 ): {
   fetchImpl: typeof fetch;
   getBodies: () => Record<string, unknown>[];
@@ -90,7 +96,7 @@ function createSequentialFetchSpy(
     return {
       ok: (response.status ?? 200) >= 200 && (response.status ?? 200) < 300,
       status: response.status ?? 200,
-      text: async () => createEnvelope(response.content)
+      text: async () => response.rawPayload ?? createEnvelope(response.content ?? "")
     } as unknown as Response;
   }) as typeof fetch;
 
@@ -168,7 +174,8 @@ describe("LlmReActPlanner.decideNext", () => {
     expect(correctionPrompt).toContain("previous_model_output");
     expect(correctionPrompt).toContain("Invalid ReAct step: id is required");
     expect(correctionPrompt).toContain("requiredStepFields");
-    expect(correctionPrompt).toContain("Return ONLY one corrected JSON object");
+    expect(correctionPrompt).toContain("请只返回 1 个修正后的 JSON 对象");
+    expect(correctionPrompt).toContain("Return exactly one corrected JSON object");
   });
 
   it("retries finish decisions that are missing summary", async () => {
@@ -227,10 +234,24 @@ describe("LlmReActPlanner.decideNext", () => {
     expect(fetchSpy.getBodies()).toHaveLength(3);
   });
 
-  it("does not retry upstream envelope errors", async () => {
+  it("retries once when successful envelopes have empty content", async () => {
     const fetchSpy = createSequentialFetchSpy([
       {
-        content: "",
+        rawPayload: createChoiceEnvelope(
+          {
+            content: "   "
+          },
+          { finish_reason: "stop" }
+        ),
+        status: 200
+      },
+      {
+        rawPayload: createChoiceEnvelope(
+          {
+            content: "   "
+          },
+          { finish_reason: "stop" }
+        ),
         status: 200
       }
     ]);
@@ -247,9 +268,99 @@ describe("LlmReActPlanner.decideNext", () => {
 
     await expect(planner.decideNext(baseInput)).rejects.toSatisfy(
       (err: unknown) =>
-        err instanceof AgentError && err.info.code === "E_REACT_PLANNER_MODEL_RESPONSE"
+        err instanceof AgentError &&
+        err.info.code === "E_REACT_PLANNER_MODEL_RESPONSE" &&
+        err.info.message.includes("empty message content string") &&
+        err.info.message.includes("choices=1")
     );
-    expect(fetchSpy.getBodies()).toHaveLength(1);
+    expect(fetchSpy.getBodies()).toHaveLength(2);
+  });
+
+  it("extracts decision json from array-based message content", async () => {
+    const planner = new LlmReActPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: createFetchMock(
+        createChoiceEnvelope({
+          content: [
+            { type: "text", text: "{\"kind\":\"finish\"," },
+            { type: "text", text: "\"summary\":\"done\"}" }
+          ]
+        })
+      )
+    });
+
+    await expect(planner.decideNext(baseInput)).resolves.toEqual({
+      kind: "finish",
+      thought: undefined,
+      summary: "done"
+    });
+  });
+
+  it("recovers decision json from choice.text when message.content is missing", async () => {
+    const planner = new LlmReActPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: createFetchMock(
+        JSON.stringify({
+          choices: [
+            {
+              text: JSON.stringify({
+                kind: "finish",
+                summary: "done"
+              }),
+              message: {}
+            }
+          ]
+        })
+      )
+    });
+
+    await expect(planner.decideNext(baseInput)).resolves.toEqual({
+      kind: "finish",
+      thought: undefined,
+      summary: "done"
+    });
+  });
+
+  it("surfaces refusal diagnostics instead of empty-content errors", async () => {
+    const planner = new LlmReActPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: createFetchMock(
+        createChoiceEnvelope(
+          {
+            content: null,
+            refusal: "safety refusal"
+          },
+          { finish_reason: "stop" }
+        )
+      )
+    });
+
+    await expect(planner.decideNext(baseInput)).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof AgentError &&
+        err.info.code === "E_REACT_PLANNER_MODEL_RESPONSE" &&
+        err.info.message.includes("refusal") &&
+        err.info.message.includes("safety refusal")
+    );
+  });
+
+  it("surfaces incomplete choice diagnostics when message is missing", async () => {
+    const planner = new LlmReActPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: createFetchMock(
+        JSON.stringify({
+          choices: [{ finish_reason: "length" }]
+        })
+      )
+    });
+
+    await expect(planner.decideNext(baseInput)).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof AgentError &&
+        err.info.code === "E_REACT_PLANNER_MODEL_RESPONSE" &&
+        err.info.message.includes("incomplete choices[0]") &&
+        err.info.message.includes("finish_reason=length")
+    );
   });
 
   it("sends a stricter ReAct decision prompt", async () => {
@@ -271,8 +382,12 @@ describe("LlmReActPlanner.decideNext", () => {
     const body = fetchSpy.getBodies()[0];
     const systemPrompt = String((body?.messages as Array<{ content?: string }>)[0]?.content ?? "");
     const userPrompt = String((body?.messages as Array<{ content?: string }>)[1]?.content ?? "");
+    expect(systemPrompt).toContain("你是一个 ReAct 决策引擎");
+    expect(systemPrompt).toContain("You are a ReAct decision engine");
     expect(systemPrompt).toContain("required step fields");
     expect(systemPrompt).toContain("Do not omit or null any required field");
+    expect(userPrompt).toContain("请决定下一步单个 ReAct 动作");
+    expect(userPrompt).toContain("Decide the next single ReAct step");
     expect(userPrompt).toContain("requiredStepFields");
     expect(userPrompt).toContain("requiredOperationFields");
     expect(userPrompt).toContain("finishRules");
@@ -348,6 +463,34 @@ describe("LlmReActPlanner.decideNext", () => {
     expect(userPrompt).toContain("never use placeholder ids like 'placeholder', 'unused', or 'target'");
     expect(userPrompt).toContain("never emit an empty payload");
     expect(userPrompt).toContain("repair the step into a valid executable write before downgrading to inspect_document");
+  });
+
+  it("prefers one semantic selector step for batchable writes in react prompt", async () => {
+    const fetchSpy = createSequentialFetchSpy([
+      {
+        content: JSON.stringify({
+          kind: "finish",
+          summary: "done"
+        })
+      }
+    ]);
+    const planner = new LlmReActPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: fetchSpy.fetchImpl
+    });
+
+    await planner.decideNext({
+      ...baseInput,
+      goal: "正文改成宋体",
+      doc: anchoredDoc
+    });
+
+    const systemPrompt = String((fetchSpy.getBodies()[0]?.messages as Array<{ content?: string }>)[0]?.content ?? "");
+    const userPrompt = String((fetchSpy.getBodies()[0]?.messages as Array<{ content?: string }>)[1]?.content ?? "");
+    expect(systemPrompt).toContain("runtime can expand a semantic selector");
+    expect(systemPrompt).toContain("Do not split a batchable semantic write into per-node steps");
+    expect(userPrompt).toContain("prefer one executable semantic step");
+    expect(userPrompt).toContain("runtime expands matched selectors into targetNodeId or targetNodeIds");
   });
 
   it("retries act decisions when write_operation omits operation", async () => {
@@ -502,6 +645,44 @@ describe("LlmReActPlanner.decideNext", () => {
     expect(bodies).toHaveLength(2);
     expect(bodies[0]?.response_format).toBeTruthy();
     expect(bodies[1]?.response_format).toBeUndefined();
+  });
+
+  it("uses bilingual react prompts to avoid empty upstream content on english-sensitive gateways", async () => {
+    const planner = new LlmReActPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          messages?: Array<{ content?: string }>;
+        };
+        const systemPrompt = String(body.messages?.[0]?.content ?? "");
+        const userPrompt = String(body.messages?.[1]?.content ?? "");
+        const hasChinese = /[\u4e00-\u9fff]/.test(systemPrompt) && /[\u4e00-\u9fff]/.test(userPrompt);
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            hasChinese
+              ? createEnvelope(
+                  JSON.stringify({
+                    kind: "finish",
+                    summary: "done"
+                  })
+                )
+              : createChoiceEnvelope(
+                  {
+                    content: "   "
+                  },
+                  { finish_reason: "stop" }
+                )
+        } as Response;
+      }) as typeof fetch
+    });
+
+    await expect(planner.decideNext(baseInput)).resolves.toEqual({
+      kind: "finish",
+      thought: undefined,
+      summary: "done"
+    });
   });
 
   it("fails with a dedicated schema compatibility error in strict mode", async () => {
@@ -767,6 +948,72 @@ describe("LlmReActPlanner.decideNext", () => {
         operation: {
           targetSelector: {
             scope: "body"
+          }
+        }
+      }
+    });
+  });
+
+  it("normalizes mildly dirty react decisions into the current decision contract", async () => {
+    const fetchSpy = createSequentialFetchSpy([
+      {
+        content: JSON.stringify({
+          kind: "act",
+          thought: "批量改正文颜色",
+          step: {
+            id: "react_step_1",
+            tool_name: "write_operation",
+            read_only: "false",
+            idempotency_key: "react:1",
+            operation: {
+              operation_id: "op1",
+              type: "set_font_color",
+              target_selector: {
+                scope: "BODY"
+              },
+              payload: {
+                fontColor: "#00ff00"
+              }
+            }
+          }
+        })
+      }
+    ]);
+    const planner = new LlmReActPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: fetchSpy.fetchImpl
+    });
+
+    await expect(
+      planner.decideNext({
+        ...baseInput,
+        doc: {
+          ...baseDoc,
+          metadata: {
+            structureIndex: {
+              paragraphs: [{ id: "p_1", role: "body", runNodeIds: ["n1", "n2"] }],
+              roleCounts: { body: 1 },
+              paragraphMap: {}
+            }
+          }
+        }
+      })
+    ).resolves.toEqual({
+      kind: "act",
+      thought: "批量改正文颜色",
+      step: {
+        id: "react_step_1",
+        toolName: "write_operation",
+        readOnly: false,
+        idempotencyKey: "react:1",
+        operation: {
+          id: "op1",
+          type: "set_font_color",
+          targetSelector: {
+            scope: "body"
+          },
+          payload: {
+            font_color: "00FF00"
           }
         }
       }

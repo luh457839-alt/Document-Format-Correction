@@ -144,6 +144,55 @@ describe("AgentSessionService", () => {
     }
   });
 
+  it("persists latest turn-run snapshot and uses a fresh run id for each turn", async () => {
+    const dir = await makeTempDir();
+    const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });
+    const service = new AgentSessionService({
+      store,
+      modelGateway: {
+        decideTurn: async () => ({ ...baseTurnDecision }),
+        respondToConversation: async ({ messages }) =>
+          `已收到：${String(messages[messages.length - 1]?.content ?? "")}`,
+        respondToDocumentObservation: async () => "unused",
+        respondToClarification: async () => "unused"
+      },
+      runtimeFactory: () => {
+        throw new Error("not used");
+      },
+      observeDocument: async () => ({
+        document_meta: { total_paragraphs: 0, total_tables: 0 },
+        nodes: []
+      })
+    });
+
+    try {
+      await service.submitUserTurn({
+        sessionId: "chat-main",
+        userInput: "第一条消息"
+      });
+      const firstRun = await store.getLatestTurnRun("chat-main");
+      expect(firstRun?.status).toBe("completed");
+      expect(firstRun?.mode).toBe("chat");
+      expect(firstRun?.goal).toBe("answer the user");
+      expect(firstRun?.steps.map((step) => step.id)).toEqual(["decide_mode", "generate_reply"]);
+      expect(firstRun?.steps.every((step) => step.status === "completed")).toBe(true);
+
+      await service.submitUserTurn({
+        sessionId: "chat-main",
+        userInput: "第二条消息"
+      });
+      const latestRun = await store.getLatestTurnRun("chat-main");
+      expect(latestRun?.turnRunId).not.toBe(firstRun?.turnRunId);
+      expect(latestRun?.userInput).toBe("第二条消息");
+      expect(latestRun?.status).toBe("completed");
+
+      const fetchedById = await store.getTurnRun(latestRun?.turnRunId ?? "");
+      expect(fetchedById?.turnRunId).toBe(latestRun?.turnRunId);
+    } finally {
+      store.close();
+    }
+  });
+
   it("passes unified session context into execute runtime without forcing runtime mode", async () => {
     const dir = await makeTempDir();
     const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });
@@ -214,6 +263,413 @@ describe("AgentSessionService", () => {
       expect((runtimeCalls[0]?.options?.sessionContext as Array<{ role: string; content: string }>)[0]?.content).toBe(
         "把字号改成22"
       );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("aggregates repeated write events from the same semantic group into one summary step", async () => {
+    const dir = await makeTempDir();
+    const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });
+    const service = new AgentSessionService({
+      store,
+      modelGateway: {
+        decideTurn: async () => ({
+          ...baseTurnDecision,
+          mode: "execute",
+          goal: "把正文字号改成22",
+          requiresDocument: true
+        }),
+        respondToConversation: async () => "unused",
+        respondToDocumentObservation: async () => "unused",
+        respondToClarification: async () => "unused"
+      },
+      runtimeFactory: () => ({
+        run: async (_goal: string, doc: DocumentIR, options?: Record<string, unknown>) => {
+          const emit = options?.onExecutionEvent as
+            | ((event: {
+                type: string;
+                stepId?: string;
+                status?: string;
+                payload?: Record<string, unknown>;
+              }) => Promise<void>)
+            | undefined;
+          await emit?.({
+            type: "step_started",
+            stepId: "step_set_size_body__1",
+            payload: {
+              toolName: "write_operation",
+              operationType: "set_size",
+              targetNodeId: "p_1_r_0",
+              targetSelector: { scope: "body" }
+            }
+          });
+          await emit?.({
+            type: "step_succeeded",
+            stepId: "step_set_size_body__1",
+            payload: {
+              toolName: "write_operation",
+              operationType: "set_size",
+              targetNodeId: "p_1_r_0",
+              targetSelector: { scope: "body" },
+              summary: "Applied set_size to p_1_r_0."
+            }
+          });
+          await emit?.({
+            type: "step_started",
+            stepId: "step_set_size_body__2",
+            payload: {
+              toolName: "write_operation",
+              operationType: "set_size",
+              targetNodeId: "p_1_r_1",
+              targetSelector: { scope: "body" }
+            }
+          });
+          await emit?.({
+            type: "step_succeeded",
+            stepId: "step_set_size_body__2",
+            payload: {
+              toolName: "write_operation",
+              operationType: "set_size",
+              targetNodeId: "p_1_r_1",
+              targetSelector: { scope: "body" },
+              summary: "Applied set_size to p_1_r_1."
+            }
+          });
+
+          return {
+            status: "completed",
+            finalDoc: doc,
+            changeSet: { taskId: "chat-main-task", changes: [], rolledBack: false },
+            steps: [],
+            summary: "执行完成"
+          } satisfies ExecutionResult;
+        }
+      }),
+      observeDocument: async () => ({
+        document_meta: { total_paragraphs: 1, total_tables: 0 },
+        nodes: [
+          {
+            node_type: "paragraph",
+            children: [
+              { id: "p_1_r_0", node_type: "text_run", content: "第一段", style: {} },
+              { id: "p_1_r_1", node_type: "text_run", content: "第二段", style: {} }
+            ]
+          }
+        ]
+      })
+    });
+
+    try {
+      await service.attachDocument("chat-main", "D:/docs/sample.docx");
+      await service.submitUserTurn({
+        sessionId: "chat-main",
+        userInput: "把正文字号改成22"
+      });
+
+      const latestRun = await store.getLatestTurnRun("chat-main");
+      expect(latestRun?.steps.map((step) => step.id)).not.toContain("runtime:step_set_size_body__1");
+      expect(latestRun?.steps.map((step) => step.id)).not.toContain("runtime:step_set_size_body__2");
+
+      const aggregateStep = latestRun?.steps.find((step) => step.id === "runtime:summary:body:set_size");
+      expect(aggregateStep).toMatchObject({
+        status: "completed",
+        title: "已完成正文字号修改，共计2次"
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("uses batched targetNodeIds count for aggregated write summaries", async () => {
+    const dir = await makeTempDir();
+    const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });
+    const service = new AgentSessionService({
+      store,
+      modelGateway: {
+        decideTurn: async () => ({
+          ...baseTurnDecision,
+          mode: "execute",
+          goal: "把正文字体改成宋体",
+          requiresDocument: true
+        }),
+        respondToConversation: async () => "unused",
+        respondToDocumentObservation: async () => "unused",
+        respondToClarification: async () => "unused"
+      },
+      runtimeFactory: () => ({
+        run: async (_goal: string, doc: DocumentIR, options?: Record<string, unknown>) => {
+          const emit = options?.onExecutionEvent as
+            | ((event: {
+                type: string;
+                stepId?: string;
+                status?: string;
+                payload?: Record<string, unknown>;
+              }) => Promise<void>)
+            | undefined;
+          await emit?.({
+            type: "step_started",
+            stepId: "step_set_font_body",
+            payload: {
+              toolName: "write_operation",
+              operationType: "set_font",
+              targetNodeIds: ["p_1_r_0", "p_1_r_1", "p_2_r_0"],
+              targetSelector: { scope: "body" }
+            }
+          });
+          await emit?.({
+            type: "step_succeeded",
+            stepId: "step_set_font_body",
+            payload: {
+              toolName: "write_operation",
+              operationType: "set_font",
+              targetNodeIds: ["p_1_r_0", "p_1_r_1", "p_2_r_0"],
+              targetSelector: { scope: "body" },
+              summary: "Applied set_font to 3 nodes."
+            }
+          });
+
+          return {
+            status: "completed",
+            finalDoc: doc,
+            changeSet: { taskId: "chat-main-task", changes: [], rolledBack: false },
+            steps: [],
+            summary: "执行完成"
+          } satisfies ExecutionResult;
+        }
+      }),
+      observeDocument: async () => ({
+        document_meta: { total_paragraphs: 2, total_tables: 0 },
+        nodes: [
+          {
+            node_type: "paragraph",
+            children: [
+              { id: "p_1_r_0", node_type: "text_run", content: "第一段", style: {} },
+              { id: "p_1_r_1", node_type: "text_run", content: "第二段", style: {} }
+            ]
+          },
+          {
+            node_type: "paragraph",
+            children: [{ id: "p_2_r_0", node_type: "text_run", content: "第三段", style: {} }]
+          }
+        ]
+      })
+    });
+
+    try {
+      await service.attachDocument("chat-main", "D:/docs/sample.docx");
+      await service.submitUserTurn({
+        sessionId: "chat-main",
+        userInput: "把正文字体改成宋体"
+      });
+
+      const latestRun = await store.getLatestTurnRun("chat-main");
+      expect(latestRun?.steps.find((step) => step.id === "runtime:summary:body:set_font")).toMatchObject({
+        title: "已完成正文字体修改，共计3次",
+        status: "completed"
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps different semantic groups separate and preserves non-write runtime steps", async () => {
+    const dir = await makeTempDir();
+    const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });
+    const service = new AgentSessionService({
+      store,
+      modelGateway: {
+        decideTurn: async () => ({
+          ...baseTurnDecision,
+          mode: "execute",
+          goal: "批量调整正文和标题样式",
+          requiresDocument: true
+        }),
+        respondToConversation: async () => "unused",
+        respondToDocumentObservation: async () => "unused",
+        respondToClarification: async () => "unused"
+      },
+      runtimeFactory: () => ({
+        run: async (_goal: string, doc: DocumentIR, options?: Record<string, unknown>) => {
+          const emit = options?.onExecutionEvent as
+            | ((event: {
+                type: string;
+                stepId?: string;
+                status?: string;
+                payload?: Record<string, unknown>;
+              }) => Promise<void>)
+            | undefined;
+          await emit?.({
+            type: "step_started",
+            stepId: "inspect_current_styles",
+            payload: {
+              toolName: "inspect_document",
+              summary: "Inspecting document styles."
+            }
+          });
+          await emit?.({
+            type: "step_succeeded",
+            stepId: "inspect_current_styles",
+            payload: {
+              toolName: "inspect_document",
+              summary: "Observed document styles."
+            }
+          });
+          await emit?.({
+            type: "step_succeeded",
+            stepId: "step_set_size_body__1",
+            payload: {
+              toolName: "write_operation",
+              operationType: "set_size",
+              targetNodeId: "p_1_r_0",
+              targetSelector: { scope: "body" },
+              summary: "Applied set_size to p_1_r_0."
+            }
+          });
+          await emit?.({
+            type: "step_succeeded",
+            stepId: "step_set_font_color_heading__1",
+            payload: {
+              toolName: "write_operation",
+              operationType: "set_font_color",
+              targetNodeId: "p_0_r_0",
+              targetSelector: { scope: "heading", headingLevel: 1 },
+              summary: "Applied set_font_color to p_0_r_0."
+            }
+          });
+
+          return {
+            status: "completed",
+            finalDoc: doc,
+            changeSet: { taskId: "chat-main-task", changes: [], rolledBack: false },
+            steps: [],
+            summary: "执行完成"
+          } satisfies ExecutionResult;
+        }
+      }),
+      observeDocument: async () => ({
+        document_meta: { total_paragraphs: 2, total_tables: 0 },
+        nodes: [
+          {
+            node_type: "paragraph",
+            children: [{ id: "p_0_r_0", node_type: "text_run", content: "标题", style: {} }]
+          },
+          {
+            node_type: "paragraph",
+            children: [{ id: "p_1_r_0", node_type: "text_run", content: "正文", style: {} }]
+          }
+        ]
+      })
+    });
+
+    try {
+      await service.attachDocument("chat-main", "D:/docs/sample.docx");
+      await service.submitUserTurn({
+        sessionId: "chat-main",
+        userInput: "批量调整正文和标题样式"
+      });
+
+      const latestRun = await store.getLatestTurnRun("chat-main");
+      expect(latestRun?.steps.find((step) => step.id === "runtime:inspect_current_styles")).toMatchObject({
+        status: "completed",
+        title: "执行步骤 inspect_current_styles"
+      });
+      expect(latestRun?.steps.find((step) => step.id === "runtime:summary:body:set_size")).toMatchObject({
+        title: "已完成正文字号修改，共计1次"
+      });
+      expect(latestRun?.steps.find((step) => step.id === "runtime:summary:heading:set_font_color")).toMatchObject({
+        title: "已完成标题颜色修改，共计1次"
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("marks a write summary step as failed and keeps the original error summary", async () => {
+    const dir = await makeTempDir();
+    const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });
+    const service = new AgentSessionService({
+      store,
+      modelGateway: {
+        decideTurn: async () => ({
+          ...baseTurnDecision,
+          mode: "execute",
+          goal: "把标题颜色改成红色",
+          requiresDocument: true
+        }),
+        respondToConversation: async () => "unused",
+        respondToDocumentObservation: async () => "unused",
+        respondToClarification: async () => "unused"
+      },
+      runtimeFactory: () => ({
+        run: async (_goal: string, doc: DocumentIR, options?: Record<string, unknown>) => {
+          const emit = options?.onExecutionEvent as
+            | ((event: {
+                type: string;
+                stepId?: string;
+                status?: string;
+                payload?: Record<string, unknown>;
+              }) => Promise<void>)
+            | undefined;
+          await emit?.({
+            type: "step_started",
+            stepId: "step_set_font_color_heading__1",
+            payload: {
+              toolName: "write_operation",
+              operationType: "set_font_color",
+              targetNodeId: "p_0_r_0",
+              targetSelector: { scope: "heading", headingLevel: 1 }
+            }
+          });
+          await emit?.({
+            type: "step_failed",
+            stepId: "step_set_font_color_heading__1",
+            payload: {
+              toolName: "write_operation",
+              operationType: "set_font_color",
+              targetNodeId: "p_0_r_0",
+              targetSelector: { scope: "heading", headingLevel: 1 },
+              error: {
+                code: "E_DOCX_WRITE_FAILED",
+                message: "DOCX write failed: permission denied",
+                retryable: false
+              }
+            }
+          });
+
+          return {
+            status: "failed",
+            finalDoc: doc,
+            changeSet: { taskId: "chat-main-task", changes: [], rolledBack: false },
+            steps: [],
+            summary: "执行失败"
+          } satisfies ExecutionResult;
+        }
+      }),
+      observeDocument: async () => ({
+        document_meta: { total_paragraphs: 1, total_tables: 0 },
+        nodes: [
+          {
+            node_type: "paragraph",
+            children: [{ id: "p_0_r_0", node_type: "text_run", content: "标题", style: {} }]
+          }
+        ]
+      })
+    });
+
+    try {
+      await service.attachDocument("chat-main", "D:/docs/sample.docx");
+      await service.submitUserTurn({
+        sessionId: "chat-main",
+        userInput: "把标题颜色改成红色"
+      });
+
+      const latestRun = await store.getLatestTurnRun("chat-main");
+      expect(latestRun?.status).toBe("failed");
+      expect(latestRun?.steps.find((step) => step.id === "runtime:summary:heading:set_font_color")).toMatchObject({
+        status: "failed",
+        detail: "DOCX write failed: permission denied"
+      });
     } finally {
       store.close();
     }
@@ -493,7 +949,7 @@ describe("AgentSessionService", () => {
     }
   });
 
-  it("inspects document and asks a clarification question instead of executing ambiguous edits", async () => {
+  it("defaults body edits to include list items and appends the execution note", async () => {
     const dir = await makeTempDir();
     const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });
     const saveGoalSpy = vi.spyOn(store, "saveGoal");
@@ -503,20 +959,29 @@ describe("AgentSessionService", () => {
         { id: "p_1", text: "普通正文", role: "body", run_ids: ["p_1_r_0"], in_table: false },
         { id: "p_2", text: "编号正文", role: "list_item", list_level: 0, run_ids: ["p_2_r_0"], in_table: false }
       ],
-      nodes: []
+      nodes: [
+        { node_type: "paragraph", children: [{ id: "p_1_r_0", node_type: "text_run", content: "普通正文" }] },
+        { node_type: "paragraph", children: [{ id: "p_2_r_0", node_type: "text_run", content: "编号正文" }] }
+      ]
     }));
-    const runtimeRun = vi.fn();
-    const respondToClarification = vi.fn(async () => "【需求澄清】\n1. 只改普通正文\n2. 只改编号段落\n3. 两类都改");
+    const runtimeRun = vi.fn(async (goal: string, doc: DocumentIR) => ({
+      status: "completed",
+      finalDoc: doc,
+      changeSet: { taskId: "chat-main-task", changes: [], rolledBack: false },
+      steps: [],
+      summary: `已执行：${goal}`
+    }));
+    const respondToClarification = vi.fn(async () => "unused");
     const service = new AgentSessionService({
       store,
       modelGateway: {
         decideTurn: async () => ({
-          mode: "chat",
-          goal: "澄清正文范围",
+          mode: "execute",
+          goal: "把正文改成红色",
           requiresDocument: true,
-          needsClarification: true,
-          clarificationKind: "selector_scope",
-          clarificationReason: "正文可能不包含项目符号/编号段落"
+          needsClarification: false,
+          clarificationKind: "none",
+          clarificationReason: ""
         }),
         respondToConversation: async () => "unused",
         respondToDocumentObservation: async () => "unused",
@@ -535,13 +1000,19 @@ describe("AgentSessionService", () => {
         userInput: "把正文改成红色"
       });
 
-      expect(result.response.mode).toBe("chat");
-      expect(result.response.content).toContain("【需求澄清】");
+      expect(result.response.mode).toBe("execute");
       expect(observeDocument).toHaveBeenCalledWith("D:/docs/sample.docx");
-      expect(respondToClarification).toHaveBeenCalledOnce();
-      expect(saveGoalSpy).not.toHaveBeenCalled();
-      expect(result.session.activeGoal).toBeUndefined();
-      expect(runtimeRun).not.toHaveBeenCalled();
+      expect(respondToClarification).not.toHaveBeenCalled();
+      expect(saveGoalSpy).toHaveBeenCalledWith(
+        "chat-main",
+        expect.stringContaining("普通正文和项目符号/编号段落"),
+        "execute",
+        "active"
+      );
+      expect(result.response.content).toContain("普通正文和项目符号/编号段落");
+      expect(result.response.content).toContain("说明：本次按默认规则同时修改了普通正文和 list_item。");
+      expect(result.session.activeGoal?.goal).toContain("普通正文和项目符号/编号段落");
+      expect(runtimeRun).toHaveBeenCalledOnce();
     } finally {
       store.close();
     }
@@ -560,24 +1031,24 @@ describe("AgentSessionService", () => {
           if (decideCount === 1) {
             return {
               mode: "chat",
-              goal: "澄清正文范围",
+              goal: "澄清标题范围",
               requiresDocument: true,
               needsClarification: true,
-              clarificationKind: "selector_scope",
-              clarificationReason: "正文可能不包含项目符号/编号段落"
+              clarificationKind: "heading_scope",
+              clarificationReason: "标题范围不明确"
             };
           }
           return {
             ...baseTurnDecision,
             mode: "execute",
-            goal: "将普通正文和项目符号/编号段落都改成红色",
+            goal: "把所有标题改成红色",
             requiresDocument: true
           };
         },
         respondToConversation: async () => "unused",
         respondToDocumentObservation: async () => "unused",
         respondToClarification: async () =>
-          "【需求澄清】\n1. 只改普通正文\n2. 只改编号段落\n3. 两类都改\n请回复选项编号，或直接补充更具体的要求。"
+          "【需求澄清】\n1. 只改一级标题\n2. 改所有标题\n请回复选项编号，或直接补充更具体的要求。"
       },
       runtimeFactory: () => ({
         run: async (goal: string, doc: DocumentIR, options?: Record<string, unknown>) => {
@@ -613,16 +1084,121 @@ describe("AgentSessionService", () => {
 
       const result = await service.submitUserTurn({
         sessionId: "chat-main",
-        userInput: "3"
+        userInput: "2"
       });
 
       expect(result.response.mode).toBe("execute");
       expect(runtimeCalls).toHaveLength(1);
-      expect(runtimeCalls[0]?.goal).toContain("普通正文和项目符号/编号段落");
+      expect(runtimeCalls[0]?.goal).toBe("把所有标题改成红色");
       expect(Array.isArray(runtimeCalls[0]?.options?.sessionContext)).toBe(true);
       const sessionContext = runtimeCalls[0]?.options?.sessionContext as Array<{ role: string; content: string }>;
       expect(sessionContext.some((item) => item.content.includes("【需求澄清】"))).toBe(true);
-      expect(sessionContext.at(-1)?.content).toBe("3");
+      expect(sessionContext.at(-1)?.content).toBe("2");
+      expect(result.response.content).not.toContain("说明：本次按默认规则同时修改了普通正文和 list_item。");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does not expand when the goal explicitly says ordinary body only", async () => {
+    const dir = await makeTempDir();
+    const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });
+    const runtimeRun = vi.fn(async (goal: string, doc: DocumentIR) => ({
+      status: "completed",
+      finalDoc: doc,
+      changeSet: { taskId: "chat-main-task", changes: [], rolledBack: false },
+      steps: [],
+      summary: `已执行：${goal}`
+    }));
+    const service = new AgentSessionService({
+      store,
+      modelGateway: {
+        decideTurn: async () => ({
+          mode: "execute",
+          goal: "只改普通正文为红色",
+          requiresDocument: true,
+          needsClarification: false,
+          clarificationKind: "none",
+          clarificationReason: ""
+        }),
+        respondToConversation: async () => "unused",
+        respondToDocumentObservation: async () => "unused",
+        respondToClarification: async () => "unused"
+      },
+      runtimeFactory: () => ({
+        run: runtimeRun
+      }),
+      observeDocument: async () => ({
+        document_meta: { total_paragraphs: 2, total_tables: 0 },
+        nodes: [
+          { node_type: "paragraph", children: [{ id: "p_1_r_0", node_type: "text_run", content: "普通正文" }] },
+          { node_type: "paragraph", children: [{ id: "p_2_r_0", node_type: "text_run", content: "编号正文" }] }
+        ]
+      })
+    });
+
+    try {
+      await service.attachDocument("chat-main", "D:/docs/sample.docx");
+      const result = await service.submitUserTurn({
+        sessionId: "chat-main",
+        userInput: "只改普通正文为红色"
+      });
+
+      expect(runtimeRun).toHaveBeenCalledOnce();
+      expect(runtimeRun.mock.calls[0]?.[0]).toBe("只改普通正文为红色");
+      expect(result.response.content).not.toContain("说明：本次按默认规则同时修改了普通正文和 list_item。");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does not expand when the goal explicitly targets list items only", async () => {
+    const dir = await makeTempDir();
+    const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });
+    const runtimeRun = vi.fn(async (goal: string, doc: DocumentIR) => ({
+      status: "completed",
+      finalDoc: doc,
+      changeSet: { taskId: "chat-main-task", changes: [], rolledBack: false },
+      steps: [],
+      summary: `已执行：${goal}`
+    }));
+    const service = new AgentSessionService({
+      store,
+      modelGateway: {
+        decideTurn: async () => ({
+          mode: "execute",
+          goal: "只改编号段落为红色",
+          requiresDocument: true,
+          needsClarification: false,
+          clarificationKind: "none",
+          clarificationReason: ""
+        }),
+        respondToConversation: async () => "unused",
+        respondToDocumentObservation: async () => "unused",
+        respondToClarification: async () => "unused"
+      },
+      runtimeFactory: () => ({
+        run: runtimeRun
+      }),
+      observeDocument: async () => ({
+        document_meta: { total_paragraphs: 2, total_tables: 0 },
+        nodes: [
+          { node_type: "paragraph", children: [{ id: "p_1_r_0", node_type: "text_run", content: "普通正文" }] },
+          { node_type: "paragraph", children: [{ id: "p_2_r_0", node_type: "text_run", content: "编号正文" }] }
+        ]
+      })
+    });
+
+    try {
+      await service.attachDocument("chat-main", "D:/docs/sample.docx");
+      const result = await service.submitUserTurn({
+        sessionId: "chat-main",
+        userInput: "只改编号段落为红色"
+      });
+
+      expect(runtimeRun).toHaveBeenCalledOnce();
+      expect(runtimeRun.mock.calls[0]?.[0]).toBe("只改编号段落为红色");
+      expect(result.response.content).not.toContain("说明：本次按默认规则同时修改了普通正文和 list_item。");
     } finally {
       store.close();
     }

@@ -137,14 +137,12 @@ def _execute_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
     if tool_name == "write_operation":
         operation = _require_operation(tool_input)
         dry_run = bool(context.get("dryRun"))
-        next_doc = _apply_write_operation(doc, operation)
+        target_node_ids = _read_write_operation_target_node_ids(operation)
+        next_doc = _apply_write_operation(doc, operation, target_node_ids)
+        summary = _build_write_operation_summary(operation, target_node_ids, dry_run=dry_run)
         return {
             "doc": next_doc,
-            "summary": (
-                f"Dry-run: {operation['type']} prepared for {operation['targetNodeId']}."
-                if dry_run
-                else f"Applied {operation['type']} to {operation['targetNodeId']}."
-            ),
+            "summary": summary,
         }
 
     if tool_name == "materialize_document":
@@ -181,36 +179,35 @@ def _require_operation(tool_input: dict[str, Any]) -> dict[str, Any]:
     return operation
 
 
-def _apply_write_operation(doc: dict[str, Any], operation: dict[str, Any]) -> dict[str, Any]:
+def _apply_write_operation(
+    doc: dict[str, Any], operation: dict[str, Any], target_node_ids: list[str] | None = None
+) -> dict[str, Any]:
     next_doc = _clone_doc(doc)
     nodes = next_doc.get("nodes")
     if not isinstance(nodes, list):
         raise PythonToolRunnerError("E_INVALID_DOCUMENT", "document.nodes must be a list.")
-
-    target_node_id = _require_non_empty_string(
-        operation.get("targetNodeId"),
-        "E_INVALID_OPERATION",
-        "operation.targetNodeId is required.",
-    )
-    target_node = None
-    for node in nodes:
-        if isinstance(node, dict) and node.get("id") == target_node_id:
-            target_node = node
-            break
-    if target_node is None:
-        raise PythonToolRunnerError("E_TARGET_NOT_FOUND", f"Target node not found: {target_node_id}")
 
     operation_type = str(operation.get("type", "")).strip()
     normalized_style = _normalize_write_operation_payload(operation)
     if operation_type in {"merge_paragraph", "split_paragraph"}:
         return _apply_structure_write_operation(next_doc, operation, normalized_style)
 
-    style = target_node.get("style")
-    if not isinstance(style, dict):
-        style = {}
-        target_node["style"] = style
-    style.update(normalized_style)
-    style["operation"] = operation_type
+    resolved_target_ids = target_node_ids or _read_write_operation_target_node_ids(operation)
+    nodes_by_id = {
+        node.get("id"): node
+        for node in nodes
+        if isinstance(node, dict) and isinstance(node.get("id"), str) and node.get("id").strip()
+    }
+    for target_node_id in resolved_target_ids:
+        target_node = nodes_by_id.get(target_node_id)
+        if target_node is None:
+            raise PythonToolRunnerError("E_TARGET_NOT_FOUND", f"Target node not found: {target_node_id}")
+        style = target_node.get("style")
+        if not isinstance(style, dict):
+            style = {}
+            target_node["style"] = style
+        style.update(normalized_style)
+        style["operation"] = operation_type
     return next_doc
 
 
@@ -316,6 +313,47 @@ def _normalize_write_operation_payload(operation: dict[str, Any]) -> dict[str, A
         return {"split_offset": split_offset}
 
     return dict(payload)
+
+
+def _read_write_operation_target_node_ids(operation: dict[str, Any]) -> list[str]:
+    operation_type = str(operation.get("type", "")).strip()
+    if operation_type in {"merge_paragraph", "split_paragraph"}:
+        target_node_id = _require_non_empty_string(
+            operation.get("targetNodeId"),
+            "E_INVALID_OPERATION",
+            "operation.targetNodeId is required.",
+        )
+        return [target_node_id]
+
+    raw_target_ids = operation.get("targetNodeIds")
+    if isinstance(raw_target_ids, list):
+        target_node_ids = [
+            value.strip()
+            for value in raw_target_ids
+            if isinstance(value, str) and value.strip()
+        ]
+        if target_node_ids:
+            return target_node_ids
+
+    target_node_id = operation.get("targetNodeId")
+    if isinstance(target_node_id, str) and target_node_id.strip():
+        return [target_node_id.strip()]
+
+    raise PythonToolRunnerError(
+        "E_INVALID_OPERATION",
+        "operation.targetNodeId or operation.targetNodeIds is required.",
+    )
+
+
+def _build_write_operation_summary(operation: dict[str, Any], target_node_ids: list[str], *, dry_run: bool) -> str:
+    operation_type = str(operation.get("type", "")).strip()
+    if len(target_node_ids) == 1:
+        if dry_run:
+            return f"Dry-run: {operation_type} prepared for {target_node_ids[0]}."
+        return f"Applied {operation_type} to {target_node_ids[0]}."
+    if dry_run:
+        return f"Dry-run: {operation_type} prepared for {len(target_node_ids)} nodes."
+    return f"Applied {operation_type} to {len(target_node_ids)} nodes."
 
 
 def _read_output_docx_path(doc: dict[str, Any]) -> str | None:

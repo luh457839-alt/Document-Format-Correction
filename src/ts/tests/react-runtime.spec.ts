@@ -122,6 +122,66 @@ describe("react runtime loop", () => {
     expect(sawObservation).toBe(true);
   });
 
+  it("batches selector-based style writes in react_loop", async () => {
+    const registry = new InMemoryToolRegistry();
+    registry.register(new WriteOperationTool());
+    const selectorDoc: DocumentIR = {
+      id: "react-doc-batch",
+      version: "v1",
+      nodes: [
+        { id: "p_0_r_0", text: "标题" },
+        { id: "p_1_r_0", text: "第一段" },
+        { id: "p_1_r_1", text: "正文" },
+        { id: "p_2_r_0", text: "第二段正文" }
+      ],
+      metadata: {
+        structureIndex: {
+          paragraphs: [
+            { id: "p_0", role: "heading", headingLevel: 1, runNodeIds: ["p_0_r_0"] },
+            { id: "p_1", role: "body", runNodeIds: ["p_1_r_0", "p_1_r_1"] },
+            { id: "p_2", role: "body", runNodeIds: ["p_2_r_0"] }
+          ],
+          roleCounts: { heading: 1, body: 2 },
+          paragraphMap: {}
+        }
+      }
+    };
+    const runtime = new AgentRuntime(
+      undefined,
+      new DefaultExecutor({ toolRegistry: registry }),
+      new DefaultValidator(),
+      undefined,
+      new SequenceReActPlanner([
+        {
+          kind: "act",
+          step: {
+            id: "batch_body_font",
+            toolName: "write_operation",
+            readOnly: false,
+            idempotencyKey: "react:batch:body",
+            operation: {
+              id: "op_batch_body_font",
+              type: "set_font",
+              targetSelector: { scope: "body" },
+              payload: { fontName: "SimSun" }
+            }
+          }
+        },
+        {
+          kind: "finish",
+          summary: "done"
+        }
+      ]),
+      "react_loop"
+    );
+
+    const result = await runtime.run("goal", selectorDoc, { runtimeMode: "react_loop" });
+
+    expect(result.status).toBe("completed");
+    expect(result.changeSet.changes).toHaveLength(1);
+    expect(result.finalDoc.nodes.filter((node) => node.style?.font_name === "SimSun")).toHaveLength(3);
+  });
+
   it("returns waiting_user when confirmation is required", async () => {
     const registry = new InMemoryToolRegistry();
     registry.register(new WriteOperationTool());
@@ -188,5 +248,70 @@ describe("react runtime loop", () => {
     expect(result.status).toBe("failed");
     expect(result.summary).toContain("maxTurns=2");
     expect(result.turnCount).toBe(2);
+  });
+
+  it("uses a higher default maxTurns budget than 8", async () => {
+    const registry = new InMemoryToolRegistry();
+    registry.register(new InspectDocumentTool());
+    const runtime = new AgentRuntime(
+      undefined,
+      new DefaultExecutor({ toolRegistry: registry }),
+      new DefaultValidator(),
+      undefined,
+      {
+        async decideNext(input: ReActTurnInput): Promise<ReActDecision> {
+          if (input.turnIndex >= 10) {
+            return { kind: "finish", summary: "done" };
+          }
+          return {
+            kind: "act",
+            step: {
+              id: `loop_${input.turnIndex}`,
+              toolName: "inspect_document",
+              readOnly: true,
+              idempotencyKey: `loop:${input.turnIndex}`
+            }
+          };
+        }
+      },
+      "react_loop"
+    );
+
+    const result = await runtime.run("goal", baseDoc, { runtimeMode: "react_loop" });
+    expect(result.status).toBe("completed");
+    expect(result.turnCount).toBe(10);
+  });
+
+  it("clips execution by remaining task budget", async () => {
+    const registry = new InMemoryToolRegistry();
+    registry.register({
+      name: "slow_write",
+      readOnly: false,
+      validate: async () => {},
+      execute: async (input) => {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return { doc: structuredClone(input.doc), summary: "done" };
+      }
+    });
+    const runtime = new AgentRuntime(
+      {
+        createPlan: async () => ({
+          taskId: "task_budget",
+          goal: "slow change",
+          steps: [{ id: "slow", toolName: "slow_write", readOnly: false, idempotencyKey: "slow:write" }]
+        })
+      },
+      new DefaultExecutor({ toolRegistry: registry }),
+      new DefaultValidator()
+    );
+
+    const result = await runtime.run("goal", baseDoc, {
+      runtimeMode: "plan_once",
+      defaultTimeoutMs: 200,
+      taskTimeoutMs: 20
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.summary).toContain("Task budget exceeded");
   });
 });

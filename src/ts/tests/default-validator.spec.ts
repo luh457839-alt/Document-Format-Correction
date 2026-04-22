@@ -115,4 +115,22 @@ describe("DefaultValidator.preValidate", () => {
         err.info.message.includes("empty")
     );
   });
+
+  it("accepts batched targetNodeIds for executable write steps", async () => {
+    const validator = new DefaultValidator();
+    const batchedPlan = createPlan({
+      id: "s3",
+      toolName: "write_operation",
+      readOnly: false,
+      idempotencyKey: "write:s3",
+      operation: {
+        id: "op3",
+        type: "set_font_color",
+        targetNodeIds: ["n1"],
+        payload: { font_color: "00FF00" }
+      }
+    });
+
+    await expect(validator.preValidate(batchedPlan, doc)).resolves.toBeUndefined();
+  });
 });

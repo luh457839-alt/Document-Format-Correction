@@ -2,6 +2,19 @@ import React, { useEffect, useState } from 'react';
 import { useChatStore } from '../../store/useChatStore';
 import { UserSettings } from '../../types';
 
+function parseRequiredNumber(value: string, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parseNullableNumber(value: string): number | null {
+  if (!value.trim()) {
+    return null;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
 export const SettingsDrawer: React.FC = () => {
   const {
     settings,
@@ -211,6 +224,101 @@ export const SettingsDrawer: React.FC = () => {
               </select>
               <p className="mt-2 text-xs text-gray-500">
                 react_loop 适合多轮规划执行，plan_once 适合单次规划。
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-300">
+                Planner Request Timeout (ms)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={localSettings.plannerTimeoutMs ?? ''}
+                onChange={(e) => updateLocalSettings('plannerTimeoutMs', parseNullableNumber(e.target.value))}
+                className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                placeholder="留空表示使用模型默认"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-300">
+                Step Timeout (ms)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={localSettings.stepTimeoutMs}
+                onChange={(e) =>
+                  updateLocalSettings('stepTimeoutMs', parseRequiredNumber(e.target.value, localSettings.stepTimeoutMs))
+                }
+                className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-300">
+                Task Timeout (ms)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={localSettings.taskTimeoutMs ?? ''}
+                onChange={(e) => updateLocalSettings('taskTimeoutMs', parseNullableNumber(e.target.value))}
+                className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                placeholder="留空表示不设整轮硬超时"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-300">
+                Python Tool Timeout (ms)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={localSettings.pythonToolTimeoutMs ?? ''}
+                onChange={(e) =>
+                  updateLocalSettings('pythonToolTimeoutMs', parseNullableNumber(e.target.value))
+                }
+                className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                placeholder="留空表示继承 Step Timeout"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-300">
+                Max Turns
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={localSettings.maxTurns}
+                onChange={(e) =>
+                  updateLocalSettings('maxTurns', parseRequiredNumber(e.target.value, localSettings.maxTurns))
+                }
+                className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-300">
+                Sync Request Timeout (ms)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={localSettings.syncRequestTimeoutMs}
+                onChange={(e) =>
+                  updateLocalSettings(
+                    'syncRequestTimeoutMs',
+                    parseRequiredNumber(e.target.value, localSettings.syncRequestTimeoutMs)
+                  )
+                }
+                className="w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+              />
+              <p className="mt-2 text-xs text-gray-500">
+                仅用于同步等待；异步任务默认允许持续后台运行。
               </p>
             </div>
           </section>

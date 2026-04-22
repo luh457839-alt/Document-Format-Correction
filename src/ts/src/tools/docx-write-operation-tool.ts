@@ -53,32 +53,33 @@ export class DocxWriteOperationTool implements Tool {
 
   async execute(input: ToolExecutionInput): Promise<ToolExecutionOutput> {
     const op = input.operation!;
-    const targetNodeId = op.targetNodeId;
-    if (!targetNodeId) {
+    const targetNodeIds = readTargetNodeIds(op);
+    if (targetNodeIds.length === 0) {
       throw new AgentError({
         code: "E_INVALID_OPERATION",
-        message: "Write operation requires targetNodeId after selector expansion.",
+        message: "Write operation requires targetNodeId or targetNodeIds after selector expansion.",
         retryable: false
       });
     }
     const normalizedStyle = normalizeWriteOperationPayload(op);
     const next = structuredClone(input.doc);
-    const target = next.nodes.find((n) => n.id === targetNodeId);
-    if (!target) {
-      throw new AgentError({
-        code: "E_TARGET_NOT_FOUND",
-        message: `Target node not found: ${targetNodeId}`,
-        retryable: false
-      });
+    for (const targetNodeId of targetNodeIds) {
+      const target = next.nodes.find((n) => n.id === targetNodeId);
+      if (!target) {
+        throw new AgentError({
+          code: "E_TARGET_NOT_FOUND",
+          message: `Target node not found: ${targetNodeId}`,
+          retryable: false
+        });
+      }
+      target.style = { ...(target.style ?? {}), ...normalizedStyle, operation: op.type };
     }
-
-    target.style = { ...(target.style ?? {}), ...normalizedStyle, operation: op.type };
     const outputDocxPath = readOutputDocxPath(next);
 
     if (input.context.dryRun) {
       return {
         doc: next,
-        summary: `Dry-run: ${op.type} prepared for ${targetNodeId}.`,
+        summary: buildWriteOperationSummary(op.type, targetNodeIds, true),
         rollbackToken: `rb_${input.context.stepId}`
       };
     }
@@ -114,7 +115,10 @@ export class DocxWriteOperationTool implements Tool {
     const rollbackToken = encodeRollbackToken(snapshot);
     return {
       doc: next,
-      summary: `Applied ${op.type} to ${targetNodeId}; wrote ${outputDocxPath}.`,
+      summary:
+        targetNodeIds.length === 1
+          ? `Applied ${op.type} to ${targetNodeIds[0]}; wrote ${outputDocxPath}.`
+          : `Applied ${op.type} to ${targetNodeIds.length} nodes; wrote ${outputDocxPath}.`,
       rollbackToken,
       artifacts: { outputDocxPath }
     };
@@ -199,4 +203,20 @@ function readOutputDocxPath(doc: DocumentIR): string | undefined {
     return undefined;
   }
   return outputPath.trim();
+}
+
+function readTargetNodeIds(operation: NonNullable<ToolExecutionInput["operation"]>): string[] {
+  if (Array.isArray(operation.targetNodeIds) && operation.targetNodeIds.length > 0) {
+    return operation.targetNodeIds;
+  }
+  return operation.targetNodeId ? [operation.targetNodeId] : [];
+}
+
+function buildWriteOperationSummary(operationType: string, targetNodeIds: string[], dryRun: boolean): string {
+  if (targetNodeIds.length === 1) {
+    return dryRun ? `Dry-run: ${operationType} prepared for ${targetNodeIds[0]}.` : `Applied ${operationType} to ${targetNodeIds[0]}.`;
+  }
+  return dryRun
+    ? `Dry-run: ${operationType} prepared for ${targetNodeIds.length} nodes.`
+    : `Applied ${operationType} to ${targetNodeIds.length} nodes.`;
 }

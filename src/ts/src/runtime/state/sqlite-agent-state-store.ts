@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -39,6 +40,39 @@ export interface AgentSessionListItem {
   updatedAt: number;
   hasAttachedDocument: boolean;
   activeGoalSummary?: string;
+}
+
+export type AgentTurnRunStatus = "queued" | "running" | "waiting_user" | "completed" | "failed";
+export type AgentTurnRunStepStatus = "queued" | "running" | "completed" | "failed";
+
+export interface AgentTurnRunError {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface AgentTurnRunStep {
+  id: string;
+  title: string;
+  status: AgentTurnRunStepStatus;
+  detail?: string;
+  startedAt?: number;
+  updatedAt: number;
+}
+
+export interface AgentTurnRunSnapshot {
+  turnRunId: string;
+  sessionId: string;
+  userInput: string;
+  status: AgentTurnRunStatus;
+  mode?: AgentTurnMode;
+  goal?: string;
+  summary?: string;
+  error?: AgentTurnRunError;
+  steps: AgentTurnRunStep[];
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number;
 }
 
 export interface SqliteAgentStateStoreOptions {
@@ -239,6 +273,7 @@ export class SqliteAgentStateStore {
     const deleteTransaction = this.db.transaction((targetSessionId: string) => {
       this.db.prepare(`DELETE FROM agent_turns WHERE session_id = ?`).run(targetSessionId);
       this.db.prepare(`DELETE FROM agent_goals WHERE session_id = ?`).run(targetSessionId);
+      this.db.prepare(`DELETE FROM agent_turn_runs WHERE session_id = ?`).run(targetSessionId);
       const result = this.db.prepare(`DELETE FROM agent_sessions WHERE session_id = ?`).run(targetSessionId);
       if (result.changes === 0) {
         throw missingSession(targetSessionId);
@@ -272,6 +307,115 @@ export class SqliteAgentStateStore {
     }));
   }
 
+  async createTurnRun(
+    sessionId: string,
+    userInput: string,
+    input: Omit<AgentTurnRunSnapshot, "turnRunId" | "sessionId" | "userInput" | "createdAt" | "updatedAt"> & {
+      createdAt?: number;
+      updatedAt?: number;
+    }
+  ): Promise<AgentTurnRunSnapshot> {
+    const normalizedSessionId = normalizeStateRequired(sessionId, "sessionId");
+    const normalizedUserInput = normalizeStateRequired(userInput, "userInput");
+    const createdAt = input.createdAt ?? Date.now();
+    const snapshot: AgentTurnRunSnapshot = {
+      turnRunId: `turn_${createdAt}_${randomUUID().slice(0, 8)}`,
+      sessionId: normalizedSessionId,
+      userInput: normalizedUserInput,
+      status: input.status,
+      mode: input.mode,
+      goal: input.goal,
+      summary: input.summary,
+      error: input.error,
+      steps: input.steps,
+      createdAt,
+      updatedAt: input.updatedAt ?? createdAt,
+      completedAt: input.completedAt
+    };
+    await this.ensureSession(normalizedSessionId);
+    this.db
+      .prepare(
+        `INSERT INTO agent_turn_runs(
+          turn_run_id, session_id, user_input, status, mode, goal, summary, error_json, steps_json, created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        snapshot.turnRunId,
+        snapshot.sessionId,
+        snapshot.userInput,
+        snapshot.status,
+        snapshot.mode ?? null,
+        snapshot.goal ?? null,
+        snapshot.summary ?? null,
+        snapshot.error ? JSON.stringify(snapshot.error) : null,
+        JSON.stringify(snapshot.steps),
+        snapshot.createdAt,
+        snapshot.updatedAt,
+        snapshot.completedAt ?? null
+      );
+    return snapshot;
+  }
+
+  async updateTurnRun(
+    turnRunId: string,
+    patch: Partial<Omit<AgentTurnRunSnapshot, "turnRunId" | "sessionId" | "userInput" | "createdAt">>
+  ): Promise<AgentTurnRunSnapshot> {
+    const existing = await this.getTurnRun(turnRunId);
+    if (!existing) {
+      throw invalidState(`turnRun '${turnRunId}' does not exist`);
+    }
+    const next: AgentTurnRunSnapshot = {
+      ...existing,
+      ...patch,
+      updatedAt: patch.updatedAt ?? Date.now(),
+      steps: patch.steps ?? existing.steps
+    };
+    this.db
+      .prepare(
+        `UPDATE agent_turn_runs
+         SET status = ?, mode = ?, goal = ?, summary = ?, error_json = ?, steps_json = ?, updated_at = ?, completed_at = ?
+         WHERE turn_run_id = ?`
+      )
+      .run(
+        next.status,
+        next.mode ?? null,
+        next.goal ?? null,
+        next.summary ?? null,
+        next.error ? JSON.stringify(next.error) : null,
+        JSON.stringify(next.steps),
+        next.updatedAt,
+        next.completedAt ?? null,
+        turnRunId
+      );
+    return next;
+  }
+
+  async getTurnRun(turnRunId: string): Promise<AgentTurnRunSnapshot | undefined> {
+    const normalizedTurnRunId = normalizeStateRequired(turnRunId, "turnRunId");
+    const row = this.db
+      .prepare(
+        `SELECT turn_run_id, session_id, user_input, status, mode, goal, summary, error_json, steps_json, created_at, updated_at, completed_at
+         FROM agent_turn_runs
+         WHERE turn_run_id = ?`
+      )
+      .get(normalizedTurnRunId) as AgentTurnRunRow | undefined;
+    return row ? mapTurnRunRow(row) : undefined;
+  }
+
+  async getLatestTurnRun(sessionId: string): Promise<AgentTurnRunSnapshot | undefined> {
+    const normalizedSessionId = normalizeStateRequired(sessionId, "sessionId");
+    const row = this.db
+      .prepare(
+        `SELECT turn_run_id, session_id, user_input, status, mode, goal, summary, error_json, steps_json, created_at, updated_at, completed_at
+         FROM agent_turn_runs
+         WHERE session_id = ?
+         ORDER BY created_at DESC
+         LIMIT 1`
+      )
+      .get(normalizedSessionId) as AgentTurnRunRow | undefined;
+    return row ? mapTurnRunRow(row) : undefined;
+  }
+
   close(): void {
     this.db.close();
   }
@@ -302,6 +446,23 @@ export class SqliteAgentStateStore {
         status TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS agent_turn_runs (
+        turn_run_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        user_input TEXT NOT NULL,
+        status TEXT NOT NULL,
+        mode TEXT,
+        goal TEXT,
+        summary TEXT,
+        error_json TEXT,
+        steps_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_turn_runs_session_created
+        ON agent_turn_runs(session_id, created_at DESC);
     `);
     this.ensureAgentSessionsTitleColumn();
   }
@@ -313,6 +474,21 @@ export class SqliteAgentStateStore {
     }
     this.db.exec(`UPDATE agent_sessions SET title = session_id WHERE title IS NULL OR TRIM(title) = ''`);
   }
+}
+
+interface AgentTurnRunRow {
+  turn_run_id: string;
+  session_id: string;
+  user_input: string;
+  status: AgentTurnRunStatus;
+  mode: AgentTurnMode | null;
+  goal: string | null;
+  summary: string | null;
+  error_json: string | null;
+  steps_json: string;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
 }
 
 function normalizeStateRequired(value: string, fieldName: string): string {
@@ -346,4 +522,21 @@ function normalizeStoredTitle(title: string | null, sessionId: string): string {
 
 function isGoalStatus(value: unknown): value is AgentGoalRecord["status"] {
   return typeof value === "string" && AGENT_GOAL_STATUSES.includes(value as AgentGoalRecord["status"]);
+}
+
+function mapTurnRunRow(row: AgentTurnRunRow): AgentTurnRunSnapshot {
+  return {
+    turnRunId: row.turn_run_id,
+    sessionId: row.session_id,
+    userInput: row.user_input,
+    status: row.status,
+    mode: row.mode ?? undefined,
+    goal: row.goal ?? undefined,
+    summary: row.summary ?? undefined,
+    error: row.error_json ? (JSON.parse(row.error_json) as AgentTurnRunError) : undefined,
+    steps: JSON.parse(row.steps_json) as AgentTurnRunStep[],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at ?? undefined
+  };
 }

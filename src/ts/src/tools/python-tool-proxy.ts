@@ -102,6 +102,13 @@ function validateWriteOperationInput(input: ToolExecutionInput): void {
       retryable: false
     });
   }
+  if (!input.operation.targetNodeId && !input.operation.targetNodeIds?.length) {
+    throw new AgentError({
+      code: "E_INVALID_OPERATION",
+      message: "Write operation requires targetNodeId or targetNodeIds after selector expansion.",
+      retryable: false
+    });
+  }
   normalizeWriteOperationPayload(input.operation);
 }
 

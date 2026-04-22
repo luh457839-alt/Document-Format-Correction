@@ -28,6 +28,7 @@ class GuiEntryPointTest(unittest.TestCase):
         self.assertIn("python scripts/launch_gui.py", readme)
         self.assertIn("launch_gui.bat", readme)
         self.assertIn("PyQtWebEngine", readme)
+        self.assertIn(".tmp/qtwebengine", readme)
 
 
 if __name__ == "__main__":

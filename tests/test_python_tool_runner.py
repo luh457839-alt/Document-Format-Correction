@@ -126,6 +126,38 @@ class PythonToolRunnerTest(unittest.TestCase):
             self.assertTrue(output.exists())
             self.assertEqual(materialized["artifacts"]["outputDocxPath"], str(output))
 
+    def test_write_operation_batches_multiple_nodes_in_one_request(self) -> None:
+        executed = execute_tool_request(
+            {
+                "action": "execute",
+                "toolName": "write_operation",
+                "input": {
+                    "doc": {
+                        "id": "doc1",
+                        "version": "v1",
+                        "nodes": [
+                            {"id": "p_0_r_0", "text": "标题"},
+                            {"id": "p_1_r_0", "text": "第一段"},
+                            {"id": "p_1_r_1", "text": "正文"},
+                        ],
+                    },
+                    "operation": {
+                        "id": "op_batch",
+                        "type": "set_font",
+                        "targetNodeIds": ["p_0_r_0", "p_1_r_0", "p_1_r_1"],
+                        "payload": {"font_name": "SimSun"},
+                    },
+                    "context": {"taskId": "t1", "stepId": "s_batch", "dryRun": False},
+                },
+            }
+        )
+
+        self.assertEqual(executed["summary"], "Applied set_font to 3 nodes.")
+        self.assertEqual(
+            [node.get("style", {}).get("font_name") for node in executed["doc"]["nodes"]],
+            ["SimSun", "SimSun", "SimSun"],
+        )
+
     def test_materialize_document_writes_output_once(self) -> None:
         try:
             import docx  # type: ignore

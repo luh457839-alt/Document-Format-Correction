@@ -23,7 +23,9 @@ interface CliInput {
   runtimeOptions?: {
     dryRun?: boolean;
     maxConcurrentReadOnly?: number;
+    defaultTimeoutMs?: number;
     defaultRetryLimit?: number;
+    taskTimeoutMs?: number | null;
     useLlmPlanner?: boolean;
     runtimeMode?: RuntimeMode;
     maxTurns?: number;
@@ -51,6 +53,7 @@ export const SESSION_COMMAND_TYPES = [
   "submit_turn",
   "attach_document",
   "get_session",
+  "get_turn_run_status",
   "update_session",
   "delete_session"
 ] as const;
@@ -64,6 +67,7 @@ interface CliCommandInput {
     userInput?: string;
     docxPath?: string;
     title?: string;
+    turnRunId?: string;
     forceMode?: "chat" | "inspect" | "execute";
   };
   runtimeOptions?: {
@@ -129,6 +133,11 @@ const COMMAND_HANDLERS: Record<
   get_session: async (service, input) => ({
     session: await service.getSessionState(String(input.command.sessionId ?? ""))
   }),
+  get_turn_run_status: async (service, input) =>
+    await service.getTurnRunStatus({
+      sessionId: typeof input.command.sessionId === "string" ? input.command.sessionId : undefined,
+      turnRunId: typeof input.command.turnRunId === "string" ? input.command.turnRunId : undefined
+    }),
   update_session: async (service, input) =>
     await service.updateSessionTitle(String(input.command.sessionId ?? ""), String(input.command.title ?? "")),
   delete_session: async (service, input) => await service.deleteSession(String(input.command.sessionId ?? ""))
@@ -204,7 +213,19 @@ export async function runCliWithDeps(argv: string[], deps: RuntimeCliDeps = {}):
       const options: RuntimeRunOptions = {
         dryRun: input.runtimeOptions?.dryRun,
         maxConcurrentReadOnly: input.runtimeOptions?.maxConcurrentReadOnly,
+        defaultTimeoutMs: normalizeNullableInteger(
+          input.runtimeOptions?.defaultTimeoutMs,
+          undefined,
+          0,
+          Number.MAX_SAFE_INTEGER
+        ),
         defaultRetryLimit: normalizeInteger(input.runtimeOptions?.defaultRetryLimit, 2, 0, 10),
+        taskTimeoutMs: normalizeNullableInteger(
+          input.runtimeOptions?.taskTimeoutMs,
+          null,
+          0,
+          Number.MAX_SAFE_INTEGER
+        ),
         runtimeMode,
         maxTurns: input.runtimeOptions?.maxTurns,
         taskId: input.taskId,
@@ -419,6 +440,24 @@ function normalizeInteger(
   minValue: number,
   maxValue: number
 ): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return defaultValue;
+  }
+  const rounded = Math.floor(value);
+  if (rounded < minValue) return minValue;
+  if (rounded > maxValue) return maxValue;
+  return rounded;
+}
+
+function normalizeNullableInteger<T extends number | null | undefined>(
+  value: unknown,
+  defaultValue: T,
+  minValue: number,
+  maxValue: number
+): number | T {
+  if (value === null) {
+    return null as T;
+  }
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return defaultValue;
   }
