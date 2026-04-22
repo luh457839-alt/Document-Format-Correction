@@ -1,7 +1,7 @@
 [project]
 name = "document-format-correction-agent"
-version = "0.1.0"
-description = "Document format correction agent with a TypeScript runtime and Python host"
+version = "0.2.0"
+description = "Desktop DOCX format correction agent with a TypeScript runtime and Python host"
 requires-python = ">=3.10"
 dependencies = [
     "openai>=1.0.0",
