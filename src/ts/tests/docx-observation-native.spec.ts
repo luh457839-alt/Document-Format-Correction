@@ -20,7 +20,7 @@ async function writeFixtureDocx(target: string): Promise<void> {
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
   <w:body>
     <w:p>
-      <w:pPr><w:pStyle w:val="BodyText"/><w:jc w:val="center"/></w:pPr>
+      <w:pPr><w:pStyle w:val="BodyText"/><w:jc w:val="center"/><w:spacing w:line="360"/></w:pPr>
       <w:r>
         <w:rPr>
           <w:rStyle w:val="StrongStyle"/>
@@ -154,6 +154,7 @@ describe("native docx observation parser", () => {
     expect(style.is_strike).toBe(true);
     expect(style.highlight_color).toBe("yellow");
     expect(style.is_all_caps).toBe(true);
+    expect(style.line_spacing).toBe(1.5);
     expect(style.paragraph_alignment).toBe("center");
 
     const imageNode = paragraphChildren.find((item) => item.node_type === "image");

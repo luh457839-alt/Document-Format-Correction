@@ -17,6 +17,11 @@ describe("normalizeWriteOperationPayload", () => {
     expect(normalizeWriteOperationPayload(createOperation("set_font_color", { font_color: "#112233" }))).toEqual({
       font_color: "112233"
     });
+    expect(
+      normalizeWriteOperationPayload(createOperation("set_line_spacing", { line_spacing: { mode: "exact", pt: 20 } }))
+    ).toEqual({
+      line_spacing: { mode: "exact", pt: 20 }
+    });
     expect(normalizeWriteOperationPayload(createOperation("set_bold", { is_bold: true }))).toEqual({
       is_bold: true
     });
@@ -41,5 +46,14 @@ describe("normalizeWriteOperationPayload", () => {
     expect(() =>
       normalizeWriteOperationPayload(createOperation("split_paragraph", { split_offset: 0 }))
     ).toThrowError(/split_offset/);
+  });
+
+  it("rejects invalid line_spacing payloads", () => {
+    expect(() =>
+      normalizeWriteOperationPayload(createOperation("set_line_spacing", { line_spacing: { mode: "exact" } }))
+    ).toThrowError(/line_spacing/);
+    expect(() =>
+      normalizeWriteOperationPayload(createOperation("set_line_spacing", { line_spacing: 0 }))
+    ).toThrowError(/line_spacing/);
   });
 });

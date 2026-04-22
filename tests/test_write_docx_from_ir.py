@@ -150,6 +150,101 @@ class WriteDocxFromIrTest(unittest.TestCase):
             self.assertTrue(written_run.font.all_caps)
             self.assertEqual(written_paragraph.alignment, docx.enum.text.WD_PARAGRAPH_ALIGNMENT.CENTER)
 
+    def test_in_place_line_spacing_fields_are_written(self) -> None:
+        docx = self._import_docx()
+        write_docx_from_ir = self._import_writer()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            source = tmp_path / "source.docx"
+            output_multiple = tmp_path / "output-multiple.docx"
+            output_exact = tmp_path / "output-exact.docx"
+            payload_multiple_path = tmp_path / "payload-multiple.json"
+            payload_exact_path = tmp_path / "payload-exact.json"
+
+            document = docx.Document()
+            paragraph = document.add_paragraph()
+            paragraph.add_run("hello")
+            document.save(source)
+
+            payload_multiple_path.write_text(
+                json.dumps(
+                    {
+                        "id": "doc1",
+                        "version": "v1",
+                        "nodes": [
+                            {
+                                "id": "p_0_r_0",
+                                "text": "hello",
+                                "style": {"line_spacing": 1.5},
+                            }
+                        ],
+                        "metadata": {"inputDocxPath": str(source)},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            payload_exact_path.write_text(
+                json.dumps(
+                    {
+                        "id": "doc1",
+                        "version": "v1",
+                        "nodes": [
+                            {
+                                "id": "p_0_r_0",
+                                "text": "hello",
+                                "style": {"line_spacing": {"mode": "exact", "pt": 20}},
+                            }
+                        ],
+                        "metadata": {"inputDocxPath": str(source)},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            write_docx_from_ir(payload_multiple_path, output_multiple)
+            write_docx_from_ir(payload_exact_path, output_exact)
+
+            multiple = docx.Document(output_multiple)
+            exact = docx.Document(output_exact)
+            self.assertEqual(multiple.paragraphs[0].paragraph_format.line_spacing, 1.5)
+            self.assertEqual(exact.paragraphs[0].paragraph_format.line_spacing.pt, 20.0)
+
+    def test_in_place_write_requires_source_docx_for_docx_mapped_nodes(self) -> None:
+        self._import_docx()
+        write_docx_from_ir = self._import_writer()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            output = tmp_path / "output.docx"
+            payload_path = tmp_path / "payload.json"
+
+            payload_path.write_text(
+                json.dumps(
+                    {
+                        "id": "doc1",
+                        "version": "v1",
+                        "nodes": [
+                            {
+                                "id": "p_0_r_0",
+                                "text": "hello",
+                                "style": {"line_spacing": 1.5},
+                            }
+                        ],
+                        "metadata": {
+                            "sourceDocumentMeta": {"total_paragraphs": 1},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "inputDocxPath"):
+                write_docx_from_ir(payload_path, output)
+
     def test_in_place_hex_highlight_alias_is_supported(self) -> None:
         docx = self._import_docx()
         write_docx_from_ir = self._import_writer()

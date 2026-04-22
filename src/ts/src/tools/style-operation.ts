@@ -67,6 +67,16 @@ export function normalizeWriteOperationPayload(operation: Operation): Record<str
       }
       return { font_size_pt: fontSize };
     }
+    case "set_line_spacing": {
+      const lineSpacing = pickLineSpacingValue(payload.line_spacing);
+      if (lineSpacing === undefined) {
+        throw invalidPayload(
+          operation.type,
+          "set_line_spacing requires line_spacing as a positive number or { mode: 'exact', pt: positive number }"
+        );
+      }
+      return { line_spacing: lineSpacing };
+    }
     case "set_alignment": {
       const alignment = pickNonEmptyString(payload.paragraph_alignment, payload.alignment);
       if (!alignment) {
@@ -156,6 +166,26 @@ function pickPositiveInteger(...values: unknown[]): number | undefined {
     }
   }
   return undefined;
+}
+
+function pickLineSpacingValue(value: unknown): number | { mode: "exact"; pt: number } | undefined {
+  const multiple = pickPositiveNumber(value);
+  if (multiple !== undefined) {
+    return multiple;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const mode = pickNonEmptyString((value as { mode?: unknown }).mode);
+  if (mode !== "exact") {
+    return undefined;
+  }
+  const pt = pickPositiveNumber((value as { pt?: unknown }).pt);
+  if (pt === undefined) {
+    return undefined;
+  }
+  return { mode: "exact", pt };
 }
 
 function pickHexColor(...values: unknown[]): string | undefined {

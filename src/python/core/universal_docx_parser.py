@@ -515,13 +515,43 @@ class UniversalDocxParser:
             )
         )
 
-        return {
+        style = {
             "font_name": str(font_name or defaults.font_name),
             "font_size_pt": float(font_size_pt or defaults.font_size_pt),
             "font_color": str(font_color or defaults.font_color).upper(),
             "is_bold": is_bold,
             "is_italic": is_italic,
         }
+        explicit_line_spacing = self._read_explicit_line_spacing(paragraph)
+        if explicit_line_spacing is not None:
+            style["line_spacing"] = explicit_line_spacing
+        return style
+
+    def _read_explicit_line_spacing(self, paragraph: Paragraph) -> float | dict[str, float] | None:
+        paragraph_element = getattr(paragraph, "_p", None)
+        if paragraph_element is None:
+            return None
+        p_pr = self._find_first_child(paragraph_element, qn("w:pPr"))
+        if p_pr is None:
+            return None
+        spacing = self._find_first_child(p_pr, qn("w:spacing"))
+        if spacing is None:
+            return None
+        line_val = spacing.get(qn("w:line"))
+        if line_val is None:
+            return None
+        try:
+            line = int(line_val)
+        except ValueError:
+            return None
+        if line <= 0:
+            return None
+        line_rule = str(spacing.get(qn("w:lineRule")) or "auto").strip().lower()
+        if line_rule == "exact":
+            return {"mode": "exact", "pt": round(line / 20.0, 4)}
+        if line_rule in {"", "auto"}:
+            return round(line / 240.0, 4)
+        return None
 
     def _build_paragraph_record(
         self,

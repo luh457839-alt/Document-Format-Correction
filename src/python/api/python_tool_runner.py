@@ -139,7 +139,12 @@ def _execute_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         dry_run = bool(context.get("dryRun"))
         target_node_ids = _read_write_operation_target_node_ids(operation)
         next_doc = _apply_write_operation(doc, operation, target_node_ids)
-        summary = _build_write_operation_summary(operation, target_node_ids, dry_run=dry_run)
+        summary = _build_write_operation_summary(
+            operation,
+            target_node_ids,
+            dry_run=dry_run,
+            output_docx_path=_read_output_docx_path(next_doc),
+        )
         return {
             "doc": next_doc,
             "summary": summary,
@@ -238,6 +243,15 @@ def _normalize_write_operation_payload(operation: dict[str, Any]) -> dict[str, A
                 "set_size: set_size requires font_size_pt",
             )
         return {"font_size_pt": font_size_pt}
+
+    if operation_type == "set_line_spacing":
+        line_spacing = _pick_line_spacing_value(payload.get("line_spacing"))
+        if line_spacing is None:
+            raise PythonToolRunnerError(
+                "E_INVALID_OPERATION_PAYLOAD",
+                "set_line_spacing: set_line_spacing requires line_spacing as a positive number or {'mode': 'exact', 'pt': positive number}",
+            )
+        return {"line_spacing": line_spacing}
 
     if operation_type == "set_alignment":
         paragraph_alignment = _pick_non_empty_string(
@@ -345,8 +359,34 @@ def _read_write_operation_target_node_ids(operation: dict[str, Any]) -> list[str
     )
 
 
-def _build_write_operation_summary(operation: dict[str, Any], target_node_ids: list[str], *, dry_run: bool) -> str:
+def _build_write_operation_summary(
+    operation: dict[str, Any],
+    target_node_ids: list[str],
+    *,
+    dry_run: bool,
+    output_docx_path: str | None = None,
+) -> str:
     operation_type = str(operation.get("type", "")).strip()
+    if operation_type == "set_line_spacing" and output_docx_path:
+        if len(target_node_ids) == 1:
+            if dry_run:
+                return (
+                    f"Dry-run: {operation_type} prepared for {target_node_ids[0]}; "
+                    f"pending materialize to {output_docx_path}."
+                )
+            return (
+                f"Applied {operation_type} to {target_node_ids[0]}; "
+                f"pending materialize to {output_docx_path}."
+            )
+        if dry_run:
+            return (
+                f"Dry-run: {operation_type} prepared for {len(target_node_ids)} nodes; "
+                f"pending materialize to {output_docx_path}."
+            )
+        return (
+            f"Applied {operation_type} to {len(target_node_ids)} nodes; "
+            f"pending materialize to {output_docx_path}."
+        )
     if len(target_node_ids) == 1:
         if dry_run:
             return f"Dry-run: {operation_type} prepared for {target_node_ids[0]}."
@@ -374,6 +414,7 @@ def _materialize_document(doc: dict[str, Any], *, dry_run: bool) -> dict[str, An
             "E_OUTPUT_PATH_REQUIRED",
             "document.metadata.outputDocxPath is required for materialize_document.",
         )
+    _require_materialize_source_docx_path(next_doc)
 
     if dry_run:
         return {
@@ -536,6 +577,35 @@ def _read_working_docx_path(doc: dict[str, Any]) -> str | None:
     if not isinstance(working_path, str) or not working_path.strip():
         return None
     return working_path.strip()
+
+
+def _require_materialize_source_docx_path(doc: dict[str, Any]) -> None:
+    if _read_working_docx_path(doc) or _read_input_docx_path(doc):
+        return
+    if not _doc_requires_source_docx(doc):
+        return
+    raise PythonToolRunnerError(
+        "E_INPUT_PATH_REQUIRED",
+        "document.metadata.inputDocxPath or document.metadata.workingDocxPath is required for materialize_document when writing DOCX-derived nodes.",
+    )
+
+
+def _doc_requires_source_docx(doc: dict[str, Any]) -> bool:
+    metadata = doc.get("metadata")
+    if isinstance(metadata, dict) and any(
+        key in metadata for key in ("sourceDocumentMeta", "structureIndex", "docxObservation")
+    ):
+        return True
+    nodes = doc.get("nodes")
+    if not isinstance(nodes, list):
+        return False
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id")
+        if isinstance(node_id, str) and node_id.startswith(("p_", "tbl_")):
+            return True
+    return False
 
 
 def _create_file_snapshot(output_docx_path: str) -> _OutputFileSnapshot:
@@ -744,6 +814,22 @@ def _pick_positive_integer(*values: Any) -> int | None:
         if float(number).is_integer():
             return int(number)
     return None
+
+
+def _pick_line_spacing_value(value: Any) -> float | dict[str, Any] | None:
+    multiple = _pick_positive_number(value)
+    if multiple is not None:
+        return float(multiple)
+
+    if not isinstance(value, dict):
+        return None
+    if value.get("mode") != "exact":
+        return None
+
+    pt = _pick_positive_number(value.get("pt"))
+    if pt is None:
+        return None
+    return {"mode": "exact", "pt": float(pt)}
 
 
 def _pick_hex_color(*values: Any) -> str | None:

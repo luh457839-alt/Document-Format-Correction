@@ -44,6 +44,11 @@ export class DefaultValidator implements Validator {
           validateConcreteTarget(step.id, targetNodeId, doc);
         }
       }
+      if (step.operation.type === "set_line_spacing" && !hasValidLineSpacing(step.operation.payload)) {
+        throw invalidPlan(
+          `write_operation step '${step.id}' requires line_spacing as a positive number or { mode: 'exact', pt: positive number }.`
+        );
+      }
       if (isPayloadSemanticallyEmpty(step.operation.type, step.operation.payload)) {
         throw invalidPlan(`write_operation step '${step.id}' has an empty or non-executable payload.`);
       }
@@ -89,6 +94,9 @@ function isPayloadSemanticallyEmpty(type: string, payload: Record<string, unknow
   if (type === "set_size") {
     return !hasPositiveNumber(payload, ["font_size_pt", "fontSizePt", "fontSize"]);
   }
+  if (type === "set_line_spacing") {
+    return !hasValidLineSpacing(payload);
+  }
   if (type === "set_alignment") {
     return !hasNonEmptyString(payload, ["paragraph_alignment", "alignment"]);
   }
@@ -129,4 +137,17 @@ function hasPositiveNumber(payload: Record<string, unknown>, keys: string[]): bo
 
 function hasBoolean(payload: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => typeof payload[key] === "boolean");
+}
+
+function hasValidLineSpacing(payload: Record<string, unknown>): boolean {
+  const lineSpacing = payload.line_spacing;
+  if (typeof lineSpacing === "number" && Number.isFinite(lineSpacing) && lineSpacing > 0) {
+    return true;
+  }
+  if (!lineSpacing || typeof lineSpacing !== "object" || Array.isArray(lineSpacing)) {
+    return false;
+  }
+  const mode = (lineSpacing as { mode?: unknown }).mode;
+  const pt = (lineSpacing as { pt?: unknown }).pt;
+  return mode === "exact" && typeof pt === "number" && Number.isFinite(pt) && pt > 0;
 }

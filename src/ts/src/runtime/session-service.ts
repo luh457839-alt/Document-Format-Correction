@@ -680,6 +680,7 @@ function normalizeOperationType(value: unknown): OperationType | null {
   const candidates: OperationType[] = [
     "set_font",
     "set_size",
+    "set_line_spacing",
     "set_alignment",
     "set_font_color",
     "set_bold",
@@ -799,6 +800,9 @@ function describeOperation(operationType: OperationType): string | null {
   }
   if (operationType === "set_size") {
     return "字号";
+  }
+  if (operationType === "set_line_spacing") {
+    return "行间距";
   }
   if (operationType === "set_font_color") {
     return "颜色";

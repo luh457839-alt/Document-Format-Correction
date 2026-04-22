@@ -410,10 +410,12 @@ describe("llm planner createPlan", () => {
     expect(prompt).toContain("font_size_pt");
     expect(prompt).toContain("font_color");
     expect(prompt).toContain("highlight_color");
+    expect(prompt).toContain("line_spacing");
     expect(prompt).toContain("split_offset");
     expect(prompt).toContain("set_font");
     expect(prompt).toContain("set_size");
     expect(prompt).toContain("set_font_color");
+    expect(prompt).toContain("set_line_spacing");
     expect(prompt).toContain("set_highlight_color");
     expect(prompt).toContain("set_all_caps");
     expect(prompt).toContain("targetSelector");

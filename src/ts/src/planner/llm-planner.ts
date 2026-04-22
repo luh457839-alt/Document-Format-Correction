@@ -24,6 +24,7 @@ import { normalizeWriteOperationPayload } from "../tools/style-operation.js";
 const OPERATION_TYPES: ReadonlySet<OperationType> = new Set([
   "set_font",
   "set_size",
+  "set_line_spacing",
   "set_alignment",
   "set_font_color",
   "set_bold",
@@ -39,12 +40,12 @@ const PLAN_TOOL_NAMES = ["inspect_document", "write_operation"] as const;
 const PLAN_SYSTEM_PROMPT =
   "你是一个文档格式规划引擎。请只返回符合 Plan schema 的有效 JSON，不要输出额外解释。 " +
   "每个 write_operation 步骤都必须包含 operation.id、operation.type 和 operation.payload。 " +
-  "只能使用标准化 payload 字段：set_font -> { font_name }，set_size -> { font_size_pt }，set_alignment -> { paragraph_alignment }，set_font_color -> { font_color }，set_bold -> { is_bold }，set_italic -> { is_italic }，set_underline -> { is_underline }，set_strike -> { is_strike }，set_highlight_color -> { highlight_color }，set_all_caps -> { is_all_caps }，merge_paragraph -> { }，split_paragraph -> { split_offset }。 " +
+  "只能使用标准化 payload 字段：set_font -> { font_name }，set_size -> { font_size_pt }，set_line_spacing -> { line_spacing }，set_alignment -> { paragraph_alignment }，set_font_color -> { font_color }，set_bold -> { is_bold }，set_italic -> { is_italic }，set_underline -> { is_underline }，set_strike -> { is_strike }，set_highlight_color -> { highlight_color }，set_all_caps -> { is_all_caps }，merge_paragraph -> { }，split_paragraph -> { split_offset }。 " +
   "每个 write_operation 必须指定 operation.targetNodeId 或 operation.targetSelector；针对正文、标题、列表等语义批量范围优先使用 targetSelector。 " +
   "对于可批量的语义写操作，优先输出 1 个带 targetSelector 的语义 step，由 runtime 展开成 targetNodeId 或 targetNodeIds；除非操作本身不可批量，否则不要自己枚举每个命中节点。每个 write_operation 都必须能基于给定文档结构语义上真实执行。 " +
   "不要使用 'placeholder'、'unused'、'target' 之类的占位 id；样式修改类写操作不要输出空 payload。只有在无法落到真实文档范围时，才降级为 inspect_document。 " +
   "You are a document-format planning engine. Return valid JSON matching the Plan schema and no extra commentary. " +
-  "Every write_operation step must include operation.id, operation.type, and operation.payload. Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
+  "Every write_operation step must include operation.id, operation.type, and operation.payload. Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_line_spacing -> { line_spacing }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
   "Each write_operation must specify either operation.targetNodeId or operation.targetSelector. Use targetSelector for semantic batch requests like body text, headings, or list items. For batchable semantic writes, prefer one semantic write_operation step; the runtime will expand matched selectors into targetNodeId or targetNodeIds. Do not enumerate every matched node yourself unless the operation is inherently non-batchable. Never omit semantic fields. Every write_operation must be semantically executable against the provided document structure. Never use placeholder ids like 'placeholder', 'unused', or 'target'. Never emit an empty payload for style-changing writes. Only downgrade to inspect_document when no real document range can be grounded.";
 const PLAN_REPAIR_SYSTEM_PROMPT =
   "你负责修复无效的文档格式 Plan。请只返回 1 个有效的 Plan JSON 对象。 " +
@@ -52,7 +53,7 @@ const PLAN_REPAIR_SYSTEM_PROMPT =
   "只要文档结构允许，就优先把无效写操作修成语义上可执行的有效写操作；不要使用 'placeholder'、'unused'、'target' 之类的占位 id，也不要输出空 payload。 " +
   "如果某个写操作无法落到真实节点或选择器，就把它改成只读 inspect_document，而不是留空字段。 " +
   "You repair invalid document-format plans. Return exactly one valid Plan JSON object. Preserve the user's goal, preserve valid existing fields when possible, and fix validation failures. " +
-  "Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
+  "Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_line_spacing -> { line_spacing }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
   "Every write_operation must provide targetNodeId or targetSelector. Repair invalid writes into semantically executable writes whenever the document structure allows it. Never use placeholder ids like 'placeholder', 'unused', or 'target'. Never emit an empty payload for style-changing writes. If a write cannot be grounded to a real node or selector, convert it to a read-only inspect_document step instead of leaving fields blank.";
 const MAX_PROMPT_NODES = 50;
 const MAX_PROMPT_NODE_IDS = 200;
@@ -375,6 +376,9 @@ function buildPrompt(goal: string, doc: DocumentIR): string {
         operationPayloadSchemas: {
           set_font: { font_name: "string" },
           set_size: { font_size_pt: "number (pt)" },
+          set_line_spacing: {
+            line_spacing: "positive number | { mode: 'exact', pt: positive number }"
+          },
           set_alignment: { paragraph_alignment: "string" },
           set_font_color: { font_color: "6-char uppercase hex color" },
           set_bold: { is_bold: "boolean" },
@@ -402,6 +406,7 @@ function buildPrompt(goal: string, doc: DocumentIR): string {
           "targetNodeId or targetSelector must bind to a real document range",
           "set_font payload must use font_name only",
           "set_size payload must use font_size_pt only",
+          "set_line_spacing payload must use line_spacing only",
           "set_alignment payload must use paragraph_alignment only",
           "set_font_color payload must use font_color only",
           "set_bold payload must use is_bold only",
@@ -457,6 +462,9 @@ function buildRepairPrompt(
         operationPayloadSchemas: {
           set_font: { font_name: "string" },
           set_size: { font_size_pt: "number (pt)" },
+          set_line_spacing: {
+            line_spacing: "positive number | { mode: 'exact', pt: positive number }"
+          },
           set_alignment: { paragraph_alignment: "string" },
           set_font_color: { font_color: "6-char uppercase hex color" },
           set_bold: { is_bold: "boolean" },
@@ -484,6 +492,7 @@ function buildRepairPrompt(
           "targetNodeId or targetSelector must bind to a real document range",
           "set_font payload must use font_name only",
           "set_size payload must use font_size_pt only",
+          "set_line_spacing payload must use line_spacing only",
           "set_alignment payload must use paragraph_alignment only",
           "set_font_color payload must use font_color only",
           "set_bold payload must use is_bold only",
@@ -940,6 +949,12 @@ function validateExecutablePayload(idx: number, operationType: OperationType, pa
   ) {
     throw invalidStep(idx, "set_size payload must include font_size_pt");
   }
+  if (operationType === "set_line_spacing" && !hasValidLineSpacing(payload)) {
+    throw invalidStep(
+      idx,
+      "set_line_spacing payload must include line_spacing as a positive number or { mode: 'exact', pt: positive number }"
+    );
+  }
   if (operationType === "set_alignment" && !hasNonEmptyString(payload, ["paragraph_alignment", "alignment"])) {
     throw invalidStep(idx, "set_alignment payload must include paragraph_alignment");
   }
@@ -1097,6 +1112,9 @@ function isCanonicalPayload(operationType: OperationType, payload: Record<string
       (typeof payload.fontSize === "number" && Number.isFinite(payload.fontSize) && payload.fontSize > 0)
     );
   }
+  if (operationType === "set_line_spacing") {
+    return hasValidLineSpacing(payload);
+  }
   if (operationType === "set_alignment") {
     return (
       (typeof payload.paragraph_alignment === "string" && payload.paragraph_alignment.trim().length > 0) ||
@@ -1149,6 +1167,19 @@ function hasPositiveNumber(payload: Record<string, unknown>, keys: string[]): bo
 
 function hasBoolean(payload: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => typeof payload[key] === "boolean");
+}
+
+function hasValidLineSpacing(payload: Record<string, unknown>): boolean {
+  const lineSpacing = payload.line_spacing;
+  if (typeof lineSpacing === "number" && Number.isFinite(lineSpacing) && lineSpacing > 0) {
+    return true;
+  }
+  if (!lineSpacing || typeof lineSpacing !== "object" || Array.isArray(lineSpacing)) {
+    return false;
+  }
+  const mode = (lineSpacing as { mode?: unknown }).mode;
+  const pt = (lineSpacing as { pt?: unknown }).pt;
+  return mode === "exact" && typeof pt === "number" && Number.isFinite(pt) && pt > 0;
 }
 
 function invalidStep(idx: number, message: string): AgentError {

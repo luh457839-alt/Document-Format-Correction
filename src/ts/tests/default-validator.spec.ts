@@ -133,4 +133,40 @@ describe("DefaultValidator.preValidate", () => {
 
     await expect(validator.preValidate(batchedPlan, doc)).resolves.toBeUndefined();
   });
+
+  it("rejects invalid line spacing payloads and accepts exact spacing", async () => {
+    const validator = new DefaultValidator();
+    const invalidPlan = createPlan({
+      id: "s4",
+      toolName: "write_operation",
+      readOnly: false,
+      idempotencyKey: "write:s4",
+      operation: {
+        id: "op4",
+        type: "set_line_spacing",
+        targetNodeId: "n1",
+        payload: { line_spacing: { mode: "exact" } }
+      }
+    });
+    const validPlan = createPlan({
+      id: "s5",
+      toolName: "write_operation",
+      readOnly: false,
+      idempotencyKey: "write:s5",
+      operation: {
+        id: "op5",
+        type: "set_line_spacing",
+        targetNodeId: "n1",
+        payload: { line_spacing: { mode: "exact", pt: 18 } }
+      }
+    });
+
+    await expect(validator.preValidate(invalidPlan, doc)).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof AgentError &&
+        err.info.code === "E_INVALID_PLAN" &&
+        err.info.message.includes("line_spacing")
+    );
+    await expect(validator.preValidate(validPlan, doc)).resolves.toBeUndefined();
+  });
 });

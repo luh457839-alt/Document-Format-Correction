@@ -9,6 +9,7 @@ export type TaskStatus =
 export type OperationType =
   | "set_font"
   | "set_size"
+  | "set_line_spacing"
   | "set_alignment"
   | "set_font_color"
   | "set_bold"
@@ -76,9 +77,17 @@ export interface DocumentIR {
   metadata?: Record<string, unknown>;
 }
 
+export interface ExactLineSpacing {
+  mode: "exact";
+  pt: number;
+}
+
+export type LineSpacingValue = number | ExactLineSpacing;
+
 export interface DocumentNodeStyle extends Record<string, unknown> {
   font_name?: string;
   font_size_pt?: number;
+  line_spacing?: LineSpacingValue;
   font_color?: string;
   is_bold?: boolean;
   is_italic?: boolean;

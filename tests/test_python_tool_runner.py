@@ -158,6 +158,63 @@ class PythonToolRunnerTest(unittest.TestCase):
             ["SimSun", "SimSun", "SimSun"],
         )
 
+    def test_write_operation_normalizes_exact_line_spacing(self) -> None:
+        executed = execute_tool_request(
+            {
+                "action": "execute",
+                "toolName": "write_operation",
+                "input": {
+                    "doc": {
+                        "id": "doc1",
+                        "version": "v1",
+                        "nodes": [{"id": "p_0_r_0", "text": "正文"}],
+                        "metadata": {"outputDocxPath": "output.docx"},
+                    },
+                    "operation": {
+                        "id": "op_line_spacing",
+                        "type": "set_line_spacing",
+                        "targetNodeId": "p_0_r_0",
+                        "payload": {"line_spacing": {"mode": "exact", "pt": 20}},
+                    },
+                    "context": {"taskId": "t1", "stepId": "s_line_spacing", "dryRun": False},
+                },
+            }
+        )
+
+        self.assertEqual(
+            executed["doc"]["nodes"][0]["style"]["line_spacing"],
+            {"mode": "exact", "pt": 20.0},
+        )
+        self.assertEqual(
+            executed["summary"],
+            "Applied set_line_spacing to p_0_r_0; pending materialize to output.docx.",
+        )
+
+    def test_write_operation_rejects_invalid_line_spacing(self) -> None:
+        with self.assertRaises(PythonToolRunnerError) as ctx:
+            execute_tool_request(
+                {
+                    "action": "execute",
+                    "toolName": "write_operation",
+                    "input": {
+                        "doc": {
+                            "id": "doc1",
+                            "version": "v1",
+                            "nodes": [{"id": "p_0_r_0", "text": "正文"}],
+                        },
+                        "operation": {
+                            "id": "op_line_spacing",
+                            "type": "set_line_spacing",
+                            "targetNodeId": "p_0_r_0",
+                            "payload": {"line_spacing": {"mode": "exact"}},
+                        },
+                        "context": {"taskId": "t1", "stepId": "s_line_spacing", "dryRun": False},
+                    },
+                }
+            )
+
+        self.assertEqual(ctx.exception.code, "E_INVALID_OPERATION_PAYLOAD")
+
     def test_materialize_document_writes_output_once(self) -> None:
         try:
             import docx  # type: ignore
@@ -204,6 +261,204 @@ class PythonToolRunnerTest(unittest.TestCase):
                 result["artifacts"]["outputDocxPath"],
                 str(output),
             )
+
+    def test_materialize_document_writes_line_spacing_when_source_had_no_explicit_spacing(self) -> None:
+        try:
+            import docx  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise unittest.SkipTest(f"python-docx not available: {exc}") from exc
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            source = tmp_path / "source.docx"
+            output = tmp_path / "output.docx"
+            document = docx.Document()
+            paragraph = document.add_paragraph()
+            paragraph.add_run("hello")
+            document.save(source)
+
+            observation = execute_tool_request(
+                {
+                    "action": "execute",
+                    "toolName": "docx_observation",
+                    "input": {
+                        "doc": {"id": "doc1", "version": "v1", "nodes": []},
+                        "operation": {
+                            "id": "observe",
+                            "type": "set_font",
+                            "targetNodeId": "p_0_r_0",
+                            "payload": {"docxPath": str(source)},
+                        },
+                        "context": {"taskId": "t1", "stepId": "observe", "dryRun": False},
+                    },
+                }
+            )
+            observed_style = observation["doc"]["metadata"]["docxObservation"]["nodes"][0]["children"][0]["style"]
+            self.assertNotIn("line_spacing", observed_style)
+
+            executed = execute_tool_request(
+                {
+                    "action": "execute",
+                    "toolName": "write_operation",
+                    "input": {
+                        "doc": {
+                            "id": "doc1",
+                            "version": "v1",
+                            "nodes": [{"id": "p_0_r_0", "text": "hello"}],
+                            "metadata": {
+                                "inputDocxPath": str(source),
+                                "outputDocxPath": str(output),
+                            },
+                        },
+                        "operation": {
+                            "id": "set_line_spacing",
+                            "type": "set_line_spacing",
+                            "targetNodeId": "p_0_r_0",
+                            "payload": {"line_spacing": 1.5},
+                        },
+                        "context": {"taskId": "t1", "stepId": "set_line_spacing", "dryRun": False},
+                    },
+                }
+            )
+
+            execute_tool_request(
+                {
+                    "action": "execute",
+                    "toolName": "materialize_document",
+                    "input": {
+                        "doc": executed["doc"],
+                        "context": {"taskId": "t1", "stepId": "finalize", "dryRun": False},
+                    },
+                }
+            )
+
+            result = docx.Document(output)
+            self.assertEqual(result.paragraphs[0].paragraph_format.line_spacing, 1.5)
+
+    def test_materialize_document_rejects_docx_mapped_nodes_without_source_path(self) -> None:
+        with self.assertRaises(PythonToolRunnerError) as ctx:
+            execute_tool_request(
+                {
+                    "action": "execute",
+                    "toolName": "materialize_document",
+                    "input": {
+                        "doc": {
+                            "id": "doc1",
+                            "version": "v1",
+                            "nodes": [
+                                {
+                                    "id": "p_0_r_0",
+                                    "text": "hello",
+                                    "style": {"line_spacing": 1.5},
+                                }
+                            ],
+                            "metadata": {
+                                "outputDocxPath": "output.docx",
+                                "sourceDocumentMeta": {"total_paragraphs": 1},
+                            },
+                        },
+                        "context": {"taskId": "t1", "stepId": "finalize", "dryRun": False},
+                    },
+                }
+            )
+
+        self.assertEqual(ctx.exception.code, "E_INPUT_PATH_REQUIRED")
+        self.assertIn("inputDocxPath", ctx.exception.message)
+
+    def test_line_spacing_materialize_preserves_alignment_and_size_with_multiple_runs(self) -> None:
+        try:
+            import docx  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise unittest.SkipTest(f"python-docx not available: {exc}") from exc
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            source = tmp_path / "source.docx"
+            output = tmp_path / "output.docx"
+            document = docx.Document()
+            paragraph = document.add_paragraph()
+            paragraph.add_run("hello")
+            paragraph.add_run("world")
+            document.save(source)
+
+            doc = {
+                "id": "doc1",
+                "version": "v1",
+                "nodes": [
+                    {"id": "p_0_r_0", "text": "hello"},
+                    {"id": "p_0_r_1", "text": "world"},
+                ],
+                "metadata": {
+                    "inputDocxPath": str(source),
+                    "outputDocxPath": str(output),
+                },
+            }
+
+            sized = execute_tool_request(
+                {
+                    "action": "execute",
+                    "toolName": "write_operation",
+                    "input": {
+                        "doc": doc,
+                        "operation": {
+                            "id": "set_size",
+                            "type": "set_size",
+                            "targetNodeId": "p_0_r_0",
+                            "payload": {"font_size_pt": 16},
+                        },
+                        "context": {"taskId": "t1", "stepId": "set_size", "dryRun": False},
+                    },
+                }
+            )["doc"]
+            aligned = execute_tool_request(
+                {
+                    "action": "execute",
+                    "toolName": "write_operation",
+                    "input": {
+                        "doc": sized,
+                        "operation": {
+                            "id": "set_alignment",
+                            "type": "set_alignment",
+                            "targetNodeId": "p_0_r_0",
+                            "payload": {"paragraph_alignment": "center"},
+                        },
+                        "context": {"taskId": "t1", "stepId": "set_alignment", "dryRun": False},
+                    },
+                }
+            )["doc"]
+            spaced = execute_tool_request(
+                {
+                    "action": "execute",
+                    "toolName": "write_operation",
+                    "input": {
+                        "doc": aligned,
+                        "operation": {
+                            "id": "set_line_spacing",
+                            "type": "set_line_spacing",
+                            "targetNodeIds": ["p_0_r_0", "p_0_r_1"],
+                            "payload": {"line_spacing": {"mode": "exact", "pt": 18}},
+                        },
+                        "context": {"taskId": "t1", "stepId": "set_line_spacing", "dryRun": False},
+                    },
+                }
+            )["doc"]
+
+            execute_tool_request(
+                {
+                    "action": "execute",
+                    "toolName": "materialize_document",
+                    "input": {
+                        "doc": spaced,
+                        "context": {"taskId": "t1", "stepId": "finalize", "dryRun": False},
+                    },
+                }
+            )
+
+            result = docx.Document(output)
+            paragraph = result.paragraphs[0]
+            self.assertEqual(paragraph.alignment, docx.enum.text.WD_PARAGRAPH_ALIGNMENT.CENTER)
+            self.assertEqual(paragraph.paragraph_format.line_spacing.pt, 18.0)
+            self.assertEqual(paragraph.runs[0].font.size.pt, 16.0)
 
     def test_merge_paragraph_rehydrates_nodes_before_materialize(self) -> None:
         try:

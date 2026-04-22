@@ -56,6 +56,32 @@ describe("docx write operation tool", () => {
     });
   });
 
+  it("supports standardized set_line_spacing payload in dry-run", async () => {
+    const tool = new DocxWriteOperationTool();
+    const input: ToolExecutionInput = {
+      doc: {
+        id: "doc1",
+        version: "v1",
+        nodes: [{ id: "n1", text: "hello", style: { font_name: "Calibri" } }]
+      },
+      operation: {
+        id: "op1",
+        type: "set_line_spacing",
+        targetNodeId: "n1",
+        payload: { line_spacing: { mode: "exact", pt: 20 } }
+      },
+      context: { taskId: "t1", stepId: "s1", dryRun: true }
+    };
+
+    await tool.validate(input);
+    const output = await tool.execute(input);
+    expect(output.doc.nodes[0].style).toMatchObject({
+      font_name: "Calibri",
+      line_spacing: { mode: "exact", pt: 20 },
+      operation: "set_line_spacing"
+    });
+  });
+
   it("rejects mismatched payload for set_size", async () => {
     const tool = new DocxWriteOperationTool();
     const input: ToolExecutionInput = {

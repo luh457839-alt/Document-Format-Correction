@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import { DOMParser } from "@xmldom/xmldom";
 import { AgentError } from "../core/errors.js";
 import { getAgentMediaDir } from "../core/project-paths.js";
-import type { DocumentIR, Tool, ToolExecutionInput, ToolExecutionOutput } from "../core/types.js";
+import type { DocumentIR, LineSpacingValue, Tool, ToolExecutionInput, ToolExecutionOutput } from "../core/types.js";
 
 export interface ParseDocxOptions {
   docxPath: string;
@@ -17,6 +17,7 @@ export interface ParseDocxOptions {
 export interface TextRunStyle {
   font_name: string;
   font_size_pt: number;
+  line_spacing?: LineSpacingValue;
   font_color: string;
   is_bold: boolean;
   is_italic: boolean;
@@ -122,7 +123,7 @@ interface ParseContext {
 }
 
 const DEFAULT_MEDIA_DIR = getAgentMediaDir();
-const BUILTIN_STYLE_DEFAULTS: Required<TextRunStyle> = {
+const BUILTIN_STYLE_DEFAULTS: Omit<Required<TextRunStyle>, "line_spacing"> = {
   font_name: "Times New Roman",
   font_size_pt: 12,
   font_color: "000000",
@@ -257,6 +258,7 @@ async function parseParagraphNode(paragraph: Element, context: ParseContext): Pr
   const paragraphProps = findChildByLocalName(paragraph, "pPr");
   const paragraphStyleId = readParagraphStyleId(paragraphProps);
   const paragraphAlignment = readParagraphAlignment(paragraphProps);
+  const paragraphLineSpacing = readParagraphLineSpacing(paragraphProps);
 
   let runOrdinal = 0;
   for (const run of elementChildren(paragraph).filter((node) => localName(node) === "r")) {
@@ -269,7 +271,7 @@ async function parseParagraphNode(paragraph: Element, context: ParseContext): Pr
         id: textId,
         node_type: "text_run",
         content: text,
-        style: resolveRunStyle(run, paragraphStyleId, paragraphAlignment, context.styles)
+        style: resolveRunStyle(run, paragraphStyleId, paragraphAlignment, paragraphLineSpacing, context.styles)
       });
     }
 
@@ -337,6 +339,7 @@ function resolveRunStyle(
   run: Element,
   paragraphStyleId: string | undefined,
   paragraphAlignment: string | undefined,
+  paragraphLineSpacing: LineSpacingValue | undefined,
   styles: StyleContext
 ): TextRunStyle {
   const runProps = findChildByLocalName(run, "rPr");
@@ -421,6 +424,7 @@ function resolveRunStyle(
       defaults.is_all_caps,
       BUILTIN_STYLE_DEFAULTS.is_all_caps
     ),
+    ...(paragraphLineSpacing !== undefined ? { line_spacing: paragraphLineSpacing } : {}),
     paragraph_alignment: firstDefined(
       paragraphAlignment,
       paragraphStyle?.paragraph_alignment,
@@ -718,6 +722,22 @@ function readParagraphAlignment(paragraphProps: Element | null): string | undefi
   return attrLocal(jc, "val");
 }
 
+function readParagraphLineSpacing(paragraphProps: Element | null): LineSpacingValue | undefined {
+  const spacing = findChildByLocalName(paragraphProps, "spacing");
+  const lineValue = toNumber(attrLocal(spacing, "line"));
+  if (lineValue === undefined || lineValue <= 0) {
+    return undefined;
+  }
+  const lineRule = (attrLocal(spacing, "lineRule") ?? "auto").trim().toLowerCase();
+  if (lineRule === "exact") {
+    return { mode: "exact", pt: round4(lineValue / 20) };
+  }
+  if (!lineRule || lineRule === "auto") {
+    return round4(lineValue / 240);
+  }
+  return undefined;
+}
+
 function readBooleanFromToggleNode(node: Element | null): boolean | undefined {
   if (!node) {
     return undefined;
@@ -841,4 +861,8 @@ function toNumber(value: string | undefined): number | undefined {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000;
 }

@@ -30,6 +30,7 @@ import { normalizeWriteOperationPayload } from "../tools/style-operation.js";
 const OPERATION_TYPES: ReadonlySet<OperationType> = new Set([
   "set_font",
   "set_size",
+  "set_line_spacing",
   "set_alignment",
   "set_font_color",
   "set_bold",
@@ -310,6 +311,9 @@ function buildPrompt(input: ReActTurnInput): string {
         operationPayloadSchemas: {
           set_font: { font_name: "string" },
           set_size: { font_size_pt: "number (pt)" },
+          set_line_spacing: {
+            line_spacing: "positive number | { mode: 'exact', pt: positive number }"
+          },
           set_alignment: { paragraph_alignment: "string" },
           set_font_color: { font_color: "6-char uppercase hex color" },
           set_bold: { is_bold: "boolean" },
@@ -380,6 +384,9 @@ function buildCorrectionPrompt(
         operationPayloadSchemas: {
           set_font: { font_name: "string" },
           set_size: { font_size_pt: "number (pt)" },
+          set_line_spacing: {
+            line_spacing: "positive number | { mode: 'exact', pt: positive number }"
+          },
           set_alignment: { paragraph_alignment: "string" },
           set_font_color: { font_color: "6-char uppercase hex color" },
           set_bold: { is_bold: "boolean" },
@@ -858,6 +865,11 @@ function validateExecutablePayload(operationType: OperationType, payload: unknow
   ) {
     throw invalidStep("set_size payload must include font_size_pt");
   }
+  if (operationType === "set_line_spacing" && !hasValidLineSpacing(payload)) {
+    throw invalidStep(
+      "set_line_spacing payload must include line_spacing as a positive number or { mode: 'exact', pt: positive number }"
+    );
+  }
   if (operationType === "set_alignment" && !hasNonEmptyString(payload, ["paragraph_alignment", "alignment"])) {
     throw invalidStep("set_alignment payload must include paragraph_alignment");
   }
@@ -1015,6 +1027,9 @@ function isCanonicalPayload(operationType: OperationType, payload: Record<string
       (typeof payload.fontSize === "number" && Number.isFinite(payload.fontSize) && payload.fontSize > 0)
     );
   }
+  if (operationType === "set_line_spacing") {
+    return hasValidLineSpacing(payload);
+  }
   if (operationType === "set_alignment") {
     return (
       (typeof payload.paragraph_alignment === "string" && payload.paragraph_alignment.trim().length > 0) ||
@@ -1067,6 +1082,19 @@ function hasPositiveNumber(payload: Record<string, unknown>, keys: string[]): bo
 
 function hasBoolean(payload: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => typeof payload[key] === "boolean");
+}
+
+function hasValidLineSpacing(payload: Record<string, unknown>): boolean {
+  const lineSpacing = payload.line_spacing;
+  if (typeof lineSpacing === "number" && Number.isFinite(lineSpacing) && lineSpacing > 0) {
+    return true;
+  }
+  if (!lineSpacing || typeof lineSpacing !== "object" || Array.isArray(lineSpacing)) {
+    return false;
+  }
+  const mode = (lineSpacing as { mode?: unknown }).mode;
+  const pt = (lineSpacing as { pt?: unknown }).pt;
+  return mode === "exact" && typeof pt === "number" && Number.isFinite(pt) && pt > 0;
 }
 
 function summarizeStructureForPrompt(doc: DocumentIR): Record<string, unknown> {

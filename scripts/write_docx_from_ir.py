@@ -112,6 +112,17 @@ def _normalize_highlight_color(raw: Any) -> WD_COLOR_INDEX | None | object:
     return HIGHLIGHT_COLOR_MAP.get(normalized, _MISSING)
 
 
+def _normalize_line_spacing(raw: Any) -> float | dict[str, float] | None:
+    if isinstance(raw, (int, float)) and float(raw) > 0:
+        return float(raw)
+    if not isinstance(raw, dict) or raw.get("mode") != "exact":
+        return None
+    pt = raw.get("pt")
+    if not isinstance(pt, (int, float)) or float(pt) <= 0:
+        return None
+    return {"mode": "exact", "pt": float(pt)}
+
+
 def _set_run_text(run_element: Any, text: str) -> None:
     for child in list(run_element):
         if child.tag == qn("w:t"):
@@ -137,6 +148,12 @@ def _apply_style(run: Run, paragraph: Paragraph, style: dict[str, Any] | None) -
     font_size = style.get("font_size_pt")
     if isinstance(font_size, (int, float)) and float(font_size) > 0:
         run.font.size = Pt(float(font_size))
+
+    line_spacing = _normalize_line_spacing(style.get("line_spacing"))
+    if isinstance(line_spacing, dict):
+        paragraph.paragraph_format.line_spacing = Pt(line_spacing["pt"])
+    elif isinstance(line_spacing, (int, float)):
+        paragraph.paragraph_format.line_spacing = float(line_spacing)
 
     is_bold = style.get("is_bold")
     if isinstance(is_bold, bool):
@@ -204,6 +221,20 @@ def _collect_styles_by_node_id(nodes: list[dict[str, Any]]) -> dict[str, dict[st
             continue
         styles_by_node_id[node_id.strip()] = style
     return styles_by_node_id
+
+
+def _requires_source_docx(nodes: list[dict[str, Any]], metadata: dict[str, Any] | None) -> bool:
+    if isinstance(metadata, dict) and any(
+        key in metadata for key in ("sourceDocumentMeta", "structureIndex", "docxObservation")
+    ):
+        return True
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id")
+        if isinstance(node_id, str) and node_id.startswith(("p_", "tbl_")):
+            return True
+    return False
 
 
 def _apply_styles_to_document(document: DocxDocument, styles_by_node_id: dict[str, dict[str, Any]]) -> None:
@@ -408,6 +439,10 @@ def write_docx_from_ir(input_json: Path, output_docx: Path) -> None:
     output_docx.parent.mkdir(parents=True, exist_ok=True)
 
     if input_docx_path is None:
+        if _requires_source_docx(nodes, metadata if isinstance(metadata, dict) else None):
+            raise ValueError(
+                "DocumentIR metadata.inputDocxPath or metadata.workingDocxPath is required for DOCX-derived nodes."
+            )
         _write_rebuilt_docx(nodes, output_docx)
         return
 
