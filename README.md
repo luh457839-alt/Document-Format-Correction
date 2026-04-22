@@ -1,4 +1,4 @@
-# 文档格式修正 Agent V0.1
+# 文档格式修正 Agent V0.2.0
 
 文档格式修正 Agent 是一个面向本地桌面场景的 DOCX 处理工具。它把聊天交互、文档观察和格式修改放到同一个界面里，适合需要“用自然语言整理 Word 文档”的用户。
 
@@ -11,6 +11,7 @@
 ## 你可以直接这样理解它
 
 - 这是一个本地桌面应用，不是在线 SaaS。
+- 当前主链可以概括为 `TS 单核 Agent + Python 宿主层`：TS 负责决策和编排，Python 负责 GUI、桥接和 DOCX 工具执行。
 - 你可以只发文本、只发文件，或者同时发文本和文件。
 - 选择 DOCX 后，文件会先进入待发送状态；点击发送后才会真正导入并开始处理。
 - 生成后的文档默认写到根目录 `output/`。
@@ -107,10 +108,33 @@ Copy-Item config.example.json config.json
     "base_url": "http://localhost:8080/v1",
     "api_key": "sk-...",
     "model": "model_name",
+    "timeout_ms": null,
+    "step_timeout_ms": 60000,
+    "task_timeout_ms": null,
+    "python_tool_timeout_ms": null,
+    "max_turns": 24,
+    "sync_request_timeout_ms": 300000,
+    "max_retries": 0,
+    "temperature": 0.0,
+    "use_json_schema": null,
+    "schema_strict": null,
+    "compat_mode": "auto",
     "runtime_mode": "react_loop"
   }
 }
 ```
+
+`planner` 常用字段说明：
+
+- `timeout_ms`：单次规划模型请求超时；`null` 表示沿用运行时默认行为。
+- `step_timeout_ms`：默认单步执行超时；未单独覆盖时，工具调用也受这层预算约束。
+- `task_timeout_ms`：整轮任务总预算；`null` 表示不额外设置整轮硬上限。
+- `python_tool_timeout_ms`：单次 Python 工具调用超时；`null` 时继承单步超时语义。
+- `max_turns`：`react_loop` 模式下的最大 ReAct 轮数。
+- `sync_request_timeout_ms`：同步提交时，外层等待结果的上限。
+- `runtime_mode`：当前仓库示例配置使用 `react_loop`。
+
+更细的运行链路、默认值来源和维护入口，请看 `docs/项目详情.md`。
 
 ### 5. 启动桌面应用
 
@@ -138,6 +162,8 @@ launch_gui.bat
 
 如果你只选择文件、不输入文本，也可以直接发送。系统会自动补一条内部引导语，先分析文档再开始处理。
 
+如果任务较长，需要额外注意一件事：同步路径有等待上限，超时只表示“这次同步等待结束了”，不等于后台任务一定失败。长任务更适合通过异步 / 后台链路持续观察结果；如果你是通过接口接入，优先使用 `/messages/async` 这类异步入口。
+
 ## 运行时目录
 
 - `config.json`：模型配置
@@ -145,6 +171,8 @@ launch_gui.bat
 - `output/`：生成后的文档
 - `agent_workspace/`：运行时工作区
 - `.tmp/`：临时文件目录
+- `.tmp/qtwebengine/`：Qt WebEngine 运行时根目录
+- `.tmp/qtwebengine/instances/<timestamp>-<pid>/`：单次 GUI 启动专属的 profile、持久化存储、缓存和 `instance.json`
 
 ## 常见问题
 
@@ -179,6 +207,18 @@ npm run build
 
 桌面应用读取的是构建产物，而不是源码本身。只要改了 `src/ts/src/` 或 `src/frontend/`，都需要重新构建。
 
+### 启动时出现 Qt WebEngine 缓存相关报错
+
+现在桌面 GUI 会把 Qt WebEngine 运行时数据写入项目内的 `.tmp/qtwebengine/`，而不是系统默认的 `%LOCALAPPDATA%` 目录。每次启动都会分配独立的实例目录 `instances/<timestamp>-<pid>/`，里面包含：
+
+- `profile/`、`storage/`、`cache/`：本次实例专用的持久化存储和 HTTP cache
+- `chromium-user-data/`：Chromium 自身的 `--user-data-dir`
+- `instance.json`：创建时间、PID、命令行和路径元数据，便于排查残留实例或锁冲突
+
+启动时会扫描旧实例目录，并在确认实例已失活且超过 24 小时后自动清理；当前实例目录不会被误删。
+
+如果你手动删除 `.tmp/qtwebengine/` 后再重启，丢失的只是 WebEngine 本地缓存和页面状态，不会影响 `sessions/` 会话数据库或 `output/` 里的生成文档。
+
 ### 点击发送后处理失败
 
 优先检查以下几项：
@@ -188,10 +228,24 @@ npm run build
 - Node.js 是否可用
 - 目标文件是否为合法 `.docx`
 
+### 长任务提示超时，是不是已经失败了
+
+不一定。
+
+- `/messages` 这类同步入口只会等待到 `sync_request_timeout_ms` 为止。
+- 到时如果任务仍在执行，返回的是“同步等待超时”，不是“后台执行失败”。
+- 桌面 GUI 和异步接口都可以继续按后台任务状态观察结果；只有明确进入 `failed` 状态，才表示本轮真的失败。
+
+更完整的状态语义和运行预算说明见 `docs/项目详情.md`。
+
 ## 面向开发者的文档
 
 如果你要接手开发、排查链路或扩展能力，请优先阅读：
 
 - [项目详情](docs/项目详情.md)
+
+桌面 GUI 主入口位于 `src/python/gui/web_window.py`，本地 Web API 位于 `src/python/gui/web_api.py`，桌面前端读取的构建产物位于 `src/frontend/dist`。
+
+当前会话标题更新和删除分别通过 TS CLI 的 `update_session`、`delete_session` 命令落到主链。
 
 该文档面向开发者，包含架构、模块职责、关键链路、测试命令和维护建议。
