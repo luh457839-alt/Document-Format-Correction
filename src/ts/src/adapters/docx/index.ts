@@ -6,7 +6,7 @@ import path from "node:path";
 import { AgentError } from "../../core/errors.js";
 import { getWriterScriptPath } from "../../core/project-paths.js";
 import type { DocumentIR } from "../../core/types.js";
-import { observeDocxStateWithPython } from "../../tools/python-tool-client.js";
+import { createDocumentToolingFacade } from "../../document-tooling/facade.js";
 
 export interface DocxAdapter {
   load(source: string): Promise<DocumentIR>;
@@ -29,10 +29,10 @@ export class PythonDocxAdapter implements DocxAdapter {
   async load(source: string): Promise<DocumentIR> {
     const mode = resolveLoadMode(this.options);
     const state = mode === "runner"
-      ? await observeDocxStateWithPython(source, {
+      ? await createDocumentToolingFacade({
           pythonBin: this.options.pythonCommand,
           runnerPath: this.options.toolRunnerPath
-        })
+        }).observeDocument(source)
       : await parseDocxWithLegacyScript(source, {
           pythonCommand: this.options.pythonCommand,
           parseScriptPath: this.options.parseScriptPath,

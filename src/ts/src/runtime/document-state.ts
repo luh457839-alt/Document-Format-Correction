@@ -1,6 +1,7 @@
 import type { DocumentIR } from "../core/types.js";
 import { AgentError } from "../core/errors.js";
-import { observeDocxStateWithPython, type PythonDocxObservationState } from "../tools/python-tool-client.js";
+import { createDocumentToolingFacade } from "../document-tooling/facade.js";
+import type { PythonDocxObservationState } from "../tools/python-tool-client.js";
 
 export interface StructuredParagraph {
   id: string;
@@ -44,7 +45,7 @@ export async function hydrateDocumentFromInputDocx(document: DocumentIR): Promis
     return document;
   }
 
-  const state = await observeDocxStateWithPython(inputDocxPath.trim());
+  const state = await createDocumentToolingFacade().observeDocument(inputDocxPath.trim());
   const nodes = documentStateToNodes(state);
   if (nodes.length === 0) {
     throw new AgentError({

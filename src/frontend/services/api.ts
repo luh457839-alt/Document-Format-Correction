@@ -1,4 +1,13 @@
-import { ChatMessage, ChatSession, FrontendSessionState, ModelConfigPayload, TurnJobSnapshot } from '../types';
+import {
+  ChatMessage,
+  ChatSession,
+  FrontendSessionState,
+  ModelConfigPayload,
+  TemplateConfigOption,
+  TemplateDocument,
+  TemplateJobSnapshot,
+  TurnJobSnapshot,
+} from '../types';
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const payload = await response.json().catch(() => null);
@@ -137,6 +146,56 @@ export async function saveModelConfig(config: ModelConfigPayload): Promise<Model
     body: JSON.stringify(config),
   });
   return parseJsonResponse<ModelConfigPayload>(response);
+}
+
+export async function fetchTemplateConfigs(): Promise<TemplateConfigOption[]> {
+  const response = await fetch('/api/templates/configs');
+  const result = await parseJsonResponse<{ configs: TemplateConfigOption[] }>(response);
+  return Array.isArray(result.configs) ? result.configs : [];
+}
+
+export async function importTemplateDocument(file: File): Promise<TemplateDocument> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch('/api/templates/import-document', {
+    method: 'POST',
+    body: formData,
+  });
+  const result = await parseJsonResponse<{ document: TemplateDocument }>(response);
+  return result.document;
+}
+
+export async function startTemplateRun(
+  documentPath: string,
+  templatePath: string
+): Promise<{ job: TemplateJobSnapshot }> {
+  const response = await fetch('/api/templates/runs', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ documentPath, templatePath }),
+  });
+  return parseJsonResponse<{ job: TemplateJobSnapshot }>(response);
+}
+
+export async function fetchTemplateRun(
+  jobId: string
+): Promise<{ job: TemplateJobSnapshot; outputPath?: string }> {
+  const response = await fetch(`/api/templates/runs/${encodeURIComponent(jobId)}`);
+  return parseJsonResponse<{ job: TemplateJobSnapshot; outputPath?: string }>(response);
+}
+
+export async function openTemplateOutput(outputPath: string): Promise<{ ok: boolean }> {
+  const response = await fetch('/api/templates/open-output', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ outputPath }),
+  });
+  return parseJsonResponse<{ ok: boolean }>(response);
 }
 
 export function normalizeMessages(messages: ChatMessage[] | undefined): ChatMessage[] {

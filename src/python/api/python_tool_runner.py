@@ -194,6 +194,13 @@ def _apply_write_operation(
 
     operation_type = str(operation.get("type", "")).strip()
     normalized_style = _normalize_write_operation_payload(operation)
+    if operation_type == "set_page_layout":
+        metadata = next_doc.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            next_doc["metadata"] = metadata
+        metadata["page_layout"] = normalized_style
+        return next_doc
     if operation_type in {"merge_paragraph", "split_paragraph"}:
         return _apply_structure_write_operation(next_doc, operation, normalized_style)
 
@@ -331,6 +338,8 @@ def _normalize_write_operation_payload(operation: dict[str, Any]) -> dict[str, A
 
 def _read_write_operation_target_node_ids(operation: dict[str, Any]) -> list[str]:
     operation_type = str(operation.get("type", "")).strip()
+    if operation_type == "set_page_layout":
+        return []
     if operation_type in {"merge_paragraph", "split_paragraph"}:
         target_node_id = _require_non_empty_string(
             operation.get("targetNodeId"),
@@ -367,6 +376,10 @@ def _build_write_operation_summary(
     output_docx_path: str | None = None,
 ) -> str:
     operation_type = str(operation.get("type", "")).strip()
+    if operation_type == "set_page_layout":
+        if dry_run:
+            return "Dry-run: set_page_layout prepared for document."
+        return "Applied set_page_layout to document."
     if operation_type == "set_line_spacing" and output_docx_path:
         if len(target_node_ids) == 1:
             if dry_run:

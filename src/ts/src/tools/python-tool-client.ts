@@ -7,6 +7,19 @@ import { AgentError } from "../core/errors.js";
 import { getProjectRoot, getPythonToolRunnerPath } from "../core/project-paths.js";
 import type { DocumentIR, ToolExecutionInput } from "../core/types.js";
 import { parseDocxToState } from "./docx-observation-tool.js";
+import {
+  isDocxObservationState,
+  type DocxObservationState,
+  type ObservationFormulaNode,
+  type ObservationImageNode,
+  type ObservationParagraphNode,
+  type ObservationParagraphRecord,
+  type ObservationTableCell,
+  type ObservationTableNode,
+  type ObservationTableRow,
+  type ObservationTextRunNode
+} from "./docx-observation-schema.js";
+import { shouldFallbackToNativeDocxObservation } from "../document-tooling/observation-policy.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,73 +61,16 @@ export interface PythonToolRollbackRequest {
 
 export type PythonToolRequest = PythonToolExecuteRequest | PythonToolRollbackRequest;
 
-export interface PythonObservationTextRun {
-  id?: string;
-  node_type: "text_run";
-  content?: string;
-  style?: Record<string, unknown>;
-}
-
-export interface PythonObservationImageNode {
-  id?: string;
-  node_type: "image";
-  src?: string;
-}
-
-export interface PythonObservationFormulaNode {
-  id?: string;
-  node_type: "formula";
-  content?: string;
-}
-
-export interface PythonObservationParagraphNode {
-  id?: string;
-  node_type: "paragraph";
-  children: Array<PythonObservationTextRun | PythonObservationImageNode | PythonObservationFormulaNode>;
-}
-
-export interface PythonObservationParagraphRecord {
-  id: string;
-  text: string;
-  role: string;
-  heading_level?: number;
-  list_level?: number;
-  style_name?: string;
-  run_ids: string[];
-  in_table: boolean;
-}
-
-export interface PythonObservationTableParagraph {
-  node_type: "paragraph";
-  children: Array<PythonObservationTextRun | PythonObservationImageNode | PythonObservationFormulaNode>;
-}
-
-export interface PythonObservationTableCell {
-  cell_index: number;
-  paragraphs: PythonObservationTableParagraph[];
-  tables: PythonObservationTableNode[];
-}
-
-export interface PythonObservationTableRow {
-  row_index: number;
-  cells: PythonObservationTableCell[];
-}
-
-export interface PythonObservationTableNode {
-  id?: string;
-  node_type: "table";
-  rows: PythonObservationTableRow[];
-}
-
-export interface PythonDocxObservationState {
-  document_meta: {
-    total_paragraphs: number;
-    total_tables: number;
-    warning?: string;
-  };
-  paragraphs?: PythonObservationParagraphRecord[];
-  nodes: Array<PythonObservationParagraphNode | PythonObservationTableNode>;
-}
+export type PythonObservationTextRun = ObservationTextRunNode;
+export type PythonObservationImageNode = ObservationImageNode;
+export type PythonObservationFormulaNode = ObservationFormulaNode;
+export type PythonObservationParagraphNode = ObservationParagraphNode;
+export type PythonObservationParagraphRecord = ObservationParagraphRecord;
+export type PythonObservationTableParagraph = ObservationParagraphNode;
+export type PythonObservationTableCell = ObservationTableCell;
+export type PythonObservationTableRow = ObservationTableRow;
+export type PythonObservationTableNode = ObservationTableNode;
+export type PythonDocxObservationState = DocxObservationState;
 
 export async function runPythonTool<T = unknown>(
   request: PythonToolRequest,
@@ -236,20 +192,19 @@ export async function observeDocxStateWithPython(
     );
 
     const observation = result.doc.metadata?.docxObservation;
-    if (!observation || typeof observation !== "object") {
+    if (!isDocxObservationState(observation)) {
       throw new AgentError({
         code: "E_DOCX_PARSE_FAILED",
         message: "Python docx observation did not return metadata.docxObservation.",
         retryable: false
       });
     }
-    return observation as PythonDocxObservationState;
+    return observation;
   } catch (err) {
     if (!shouldFallbackToNativeDocxParser(err)) {
       throw err;
     }
-    const state = await parseDocxToState({ docxPath, allowFallback: false });
-    return state as PythonDocxObservationState;
+    return await parseDocxToState({ docxPath, allowFallback: false });
   }
 }
 
@@ -329,10 +284,7 @@ async function readRunnerResponse<T>(outputJsonPath: string): Promise<PythonTool
 }
 
 function shouldFallbackToNativeDocxParser(err: unknown): boolean {
-  if (!(err instanceof AgentError)) {
-    return false;
-  }
-  return err.info.code === "E_PYTHON_DEPENDENCY_MISSING";
+  return shouldFallbackToNativeDocxObservation(err);
 }
 
 function buildExitNonZeroError(toolName: string, exitCode: number, stderr: string, cause?: unknown): AgentError {

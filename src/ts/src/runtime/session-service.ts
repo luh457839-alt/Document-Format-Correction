@@ -2,6 +2,7 @@ import path from "node:path";
 import { AgentError, asAppError } from "../core/errors.js";
 import { getOutputDir } from "../core/project-paths.js";
 import type { ConversationMessage, DocumentIR, ExecutionResult, NodeSelector, OperationType } from "../core/types.js";
+import { createDocumentToolingFacade } from "../document-tooling/facade.js";
 import { createMvpRuntime, type AgentRuntime } from "./engine.js";
 import {
   LlmAgentModelGateway,
@@ -19,7 +20,7 @@ import {
   type AgentSessionSnapshot
 } from "./state/sqlite-agent-state-store.js";
 import { buildStructureIndex, documentStateToNodes } from "./document-state.js";
-import { observeDocxStateWithPython, type PythonDocxObservationState } from "../tools/python-tool-client.js";
+import type { PythonDocxObservationState } from "../tools/python-tool-client.js";
 
 export interface SubmitUserTurnInput {
   sessionId: string;
@@ -69,7 +70,7 @@ export class AgentSessionService {
     this.store = deps.store ?? new SqliteAgentStateStore();
     this.modelGateway = deps.modelGateway;
     this.runtimeFactory = deps.runtimeFactory;
-    this.observeDocument = deps.observeDocument ?? observeDocxStateWithPython;
+    this.observeDocument = deps.observeDocument ?? createDocumentToolingFacade().observeDocument;
     this.outputRootDir = deps.outputRootDir ?? getOutputDir();
   }
 
@@ -689,6 +690,9 @@ function normalizeOperationType(value: unknown): OperationType | null {
     "set_strike",
     "set_highlight_color",
     "set_all_caps",
+    "set_page_layout",
+    "set_paragraph_spacing",
+    "set_paragraph_indent",
     "merge_paragraph",
     "split_paragraph"
   ];
@@ -827,6 +831,15 @@ function describeOperation(operationType: OperationType): string | null {
   }
   if (operationType === "set_all_caps") {
     return "大写";
+  }
+  if (operationType === "set_page_layout") {
+    return "页面布局";
+  }
+  if (operationType === "set_paragraph_spacing") {
+    return "段落间距";
+  }
+  if (operationType === "set_paragraph_indent") {
+    return "段落缩进";
   }
   if (operationType === "merge_paragraph") {
     return "段落合并";

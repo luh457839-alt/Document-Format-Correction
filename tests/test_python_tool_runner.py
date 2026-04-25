@@ -158,6 +158,40 @@ class PythonToolRunnerTest(unittest.TestCase):
             ["SimSun", "SimSun", "SimSun"],
         )
 
+    def test_write_operation_allows_document_level_page_layout_without_targets(self) -> None:
+        executed = execute_tool_request(
+            {
+                "action": "execute",
+                "toolName": "write_operation",
+                "input": {
+                    "doc": {
+                        "id": "doc1",
+                        "version": "v1",
+                        "nodes": [{"id": "p_0_r_0", "text": "正文"}],
+                        "metadata": {"outputDocxPath": "output.docx"},
+                    },
+                    "operation": {
+                        "id": "op_page_layout",
+                        "type": "set_page_layout",
+                        "payload": {
+                            "margin_top_cm": 2.5,
+                            "margin_bottom_cm": 2.0,
+                        },
+                    },
+                    "context": {"taskId": "t1", "stepId": "s_page_layout", "dryRun": False},
+                },
+            }
+        )
+
+        self.assertEqual(executed["summary"], "Applied set_page_layout to document.")
+        self.assertEqual(
+            executed["doc"]["metadata"]["page_layout"],
+            {
+                "margin_top_cm": 2.5,
+                "margin_bottom_cm": 2.0,
+            },
+        )
+
     def test_write_operation_normalizes_exact_line_spacing(self) -> None:
         executed = execute_tool_request(
             {

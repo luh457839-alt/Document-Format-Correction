@@ -6,7 +6,7 @@ import { AgentError } from "../src/core/errors.js";
 import type { DocumentIR, Plan, Planner, ToolExecutionInput } from "../src/core/types.js";
 import { FixedPlanner } from "../src/planner/fixed-planner.js";
 import { createMvpRuntime } from "../src/runtime/engine.js";
-import { PythonToolProxy } from "../src/tools/python-tool-proxy.js";
+import { buildWriteOperationTool, PythonToolProxy } from "../src/tools/python-tool-proxy.js";
 
 const tempDirs: string[] = [];
 
@@ -128,6 +128,39 @@ describe("python tool proxy", () => {
     });
 
     expect(rolledBack?.metadata?.lastRollbackToken).toBe("rb_file:test");
+  });
+
+  it("allows set_page_layout without expanded target node ids", async () => {
+    const { runnerPath } = await createRunnerScript("success");
+    const tool = buildWriteOperationTool({
+      pythonBin: "node",
+      runnerPath
+    });
+
+    const input: ToolExecutionInput = {
+      doc: {
+        id: "doc1",
+        version: "v1",
+        nodes: [],
+        metadata: {
+          outputDocxPath: path.join(await makeTempDir(), "output.docx")
+        }
+      },
+      operation: {
+        id: "op_set_page_layout",
+        type: "set_page_layout",
+        payload: {
+          margin_top_cm: 2.5,
+          margin_bottom_cm: 2
+        }
+      },
+      context: { taskId: "t1", stepId: "s1", dryRun: false }
+    };
+
+    await expect(tool.validate(input)).resolves.toBeUndefined();
+    await expect(tool.execute(input)).resolves.toMatchObject({
+      summary: "Applied set_font to n1."
+    });
   });
 
   it("wires createMvpRuntime through python-backed tools", async () => {

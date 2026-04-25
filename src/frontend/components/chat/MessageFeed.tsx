@@ -1,21 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { useChatStore } from '../../store/useChatStore';
 import { ChatFeedItem, TurnJobSnapshot } from '../../types';
-
-function statusLabel(status: TurnJobSnapshot['status']): string {
-  if (status === 'queued') return '排队中';
-  if (status === 'running') return '处理中';
-  if (status === 'waiting_user') return '等待确认';
-  if (status === 'completed') return '已完成';
-  return '失败';
-}
-
-function statusTone(status: TurnJobSnapshot['status']): string {
-  if (status === 'completed') return 'border-emerald-700 bg-emerald-950/30 text-emerald-200';
-  if (status === 'waiting_user') return 'border-amber-700 bg-amber-950/30 text-amber-200';
-  if (status === 'failed') return 'border-red-700 bg-red-950/30 text-red-200';
-  return 'border-sky-700 bg-sky-950/30 text-sky-200';
-}
+import { ProgressJobCard } from '../common/ProgressJobCard';
 
 export const MessageFeed: React.FC = () => {
   const { currentSessionId, messages, localMessages, turnJobs, toggleTurnJobExpanded } = useChatStore();
@@ -107,46 +93,10 @@ export const MessageFeed: React.FC = () => {
         const job = item.job;
         return (
           <div key={item.key} className="flex justify-start">
-            <div className={`max-w-3xl rounded-lg border rounded-bl-none px-4 py-3 text-sm ${statusTone(job.status)}`}>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="font-medium">TS Agent {statusLabel(job.status)}</div>
-                  <div className="mt-1 text-xs opacity-80">{job.summary || '正在处理当前请求'}</div>
-                </div>
-                <button
-                  className="text-xs opacity-80 hover:opacity-100 transition-opacity"
-                  onClick={() => currentSessionId && toggleTurnJobExpanded(currentSessionId, job.jobId)}
-                >
-                  {job.isCollapsed ? '展开' : '折叠'}
-                </button>
-              </div>
-
-              {!job.isCollapsed && job.steps.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  {job.steps.map((step) => (
-                    <div key={step.id} className="rounded-md border border-white/10 bg-black/10 px-3 py-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <span>{step.title}</span>
-                        <span className="text-xs opacity-80">
-                          {step.status === 'queued'
-                            ? '排队中'
-                            : step.status === 'running'
-                              ? '进行中'
-                              : step.status === 'completed'
-                                ? '已完成'
-                                : '失败'}
-                        </span>
-                      </div>
-                      {step.detail && <div className="mt-1 text-xs opacity-75 whitespace-pre-wrap">{step.detail}</div>}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {job.error?.message && (
-                <div className="mt-3 text-xs whitespace-pre-wrap opacity-90">{job.error.message}</div>
-              )}
-            </div>
+            <ProgressJobCard
+              job={job}
+              onToggleCollapse={() => currentSessionId && toggleTurnJobExpanded(currentSessionId, job.jobId)}
+            />
           </div>
         );
       })}

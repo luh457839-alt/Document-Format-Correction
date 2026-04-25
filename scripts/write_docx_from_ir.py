@@ -12,7 +12,7 @@ from docx.document import Document as DocxDocument
 from docx.enum.text import WD_COLOR_INDEX, WD_PARAGRAPH_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, RGBColor
+from docx.shared import Cm, Pt, RGBColor
 from docx.table import _Cell, Table
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
@@ -76,8 +76,12 @@ HIGHLIGHT_COLOR_MAP: dict[str, WD_COLOR_INDEX | None] = {
 }
 
 TOP_LEVEL_RUN_ID_RE = re.compile(r"^p_(?P<paragraph>\d+)_r_(?P<run>\d+)$")
+TOP_LEVEL_PARAGRAPH_ID_RE = re.compile(r"^p_(?P<paragraph>\d+)$")
 TABLE_RUN_ID_RE = re.compile(
     r"^tbl_(?P<table>\d+)_r_(?P<row>\d+)_c_(?P<cell>\d+)_p_(?P<paragraph>\d+)_r_(?P<run>\d+)$"
+)
+TABLE_PARAGRAPH_ID_RE = re.compile(
+    r"^tbl_(?P<table>\d+)_r_(?P<row>\d+)_c_(?P<cell>\d+)_p_(?P<paragraph>\d+)$"
 )
 
 
@@ -154,6 +158,18 @@ def _apply_style(run: Run, paragraph: Paragraph, style: dict[str, Any] | None) -
         paragraph.paragraph_format.line_spacing = Pt(line_spacing["pt"])
     elif isinstance(line_spacing, (int, float)):
         paragraph.paragraph_format.line_spacing = float(line_spacing)
+
+    space_before = style.get("space_before_pt")
+    if isinstance(space_before, (int, float)) and float(space_before) >= 0:
+        paragraph.paragraph_format.space_before = Pt(float(space_before))
+
+    space_after = style.get("space_after_pt")
+    if isinstance(space_after, (int, float)) and float(space_after) >= 0:
+        paragraph.paragraph_format.space_after = Pt(float(space_after))
+
+    first_line_indent = style.get("first_line_indent_pt")
+    if isinstance(first_line_indent, (int, float)) and float(first_line_indent) >= 0:
+        paragraph.paragraph_format.first_line_indent = Pt(float(first_line_indent))
 
     is_bold = style.get("is_bold")
     if isinstance(is_bold, bool):
@@ -286,7 +302,36 @@ def _apply_styles_to_document(document: DocxDocument, styles_by_node_id: dict[st
         raise ValueError(f"Unable to map style updates to source DOCX nodes: {unresolved_list}")
 
 
-def _write_rebuilt_docx(nodes: list[dict[str, Any]], output_docx: Path) -> None:
+def _apply_page_layout(document: DocxDocument, metadata: dict[str, Any] | None) -> None:
+    if not isinstance(metadata, dict):
+        return
+    page_layout = metadata.get("page_layout")
+    if not isinstance(page_layout, dict):
+        return
+
+    paper_size = page_layout.get("paper_size")
+    for section in document.sections:
+        if isinstance(paper_size, str):
+            normalized = paper_size.strip().lower()
+            if normalized == "a4":
+                section.page_width = Cm(21.0)
+                section.page_height = Cm(29.7)
+            elif normalized == "letter":
+                section.page_width = Cm(21.59)
+                section.page_height = Cm(27.94)
+
+        for field_name, attr_name in (
+            ("margin_top_cm", "top_margin"),
+            ("margin_bottom_cm", "bottom_margin"),
+            ("margin_left_cm", "left_margin"),
+            ("margin_right_cm", "right_margin"),
+        ):
+            value = page_layout.get(field_name)
+            if isinstance(value, (int, float)) and float(value) > 0:
+                setattr(section, attr_name, Cm(float(value)))
+
+
+def _write_rebuilt_docx(nodes: list[dict[str, Any]], output_docx: Path, metadata: dict[str, Any] | None) -> None:
     document = Document()
 
     for node in nodes:
@@ -299,8 +344,51 @@ def _write_rebuilt_docx(nodes: list[dict[str, Any]], output_docx: Path) -> None:
         run = paragraph.add_run(text)
         _apply_style(run, paragraph, node.get("style") if isinstance(node.get("style"), dict) else None)
 
+    _apply_page_layout(document, metadata)
     output_docx.parent.mkdir(parents=True, exist_ok=True)
     document.save(str(output_docx))
+
+
+def _read_rebuild_paragraph_specs(
+    nodes: list[dict[str, Any]], metadata: dict[str, Any] | None
+) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(metadata, dict):
+        return {}
+    structure_index = metadata.get("structureIndex")
+    if not isinstance(structure_index, dict):
+        return {}
+    paragraphs = structure_index.get("paragraphs")
+    if not isinstance(paragraphs, list):
+        return {}
+
+    node_map = {
+        node.get("id"): node
+        for node in nodes
+        if isinstance(node, dict) and isinstance(node.get("id"), str) and node.get("id").strip()
+    }
+    specs: dict[str, list[dict[str, Any]]] = {}
+    for paragraph in paragraphs:
+        if not isinstance(paragraph, dict):
+            continue
+        paragraph_id = paragraph.get("id")
+        run_node_ids = paragraph.get("runNodeIds")
+        if not isinstance(paragraph_id, str) or not paragraph_id.strip() or not isinstance(run_node_ids, list):
+            continue
+        desired_nodes: list[dict[str, Any]] = []
+        requires_rebuild = False
+        for run_node_id in run_node_ids:
+            if not isinstance(run_node_id, str) or not run_node_id.strip():
+                continue
+            node = node_map.get(run_node_id)
+            if not isinstance(node, dict):
+                continue
+            desired_nodes.append(node)
+            source_run_id = node.get("sourceRunId")
+            if isinstance(source_run_id, str) and source_run_id.strip():
+                requires_rebuild = True
+        if requires_rebuild and desired_nodes:
+            specs[paragraph_id.strip()] = desired_nodes
+    return specs
 
 
 def _find_table_by_index(parent: DocxDocument | _Cell, target_index: int) -> Table:
@@ -348,6 +436,65 @@ def _locate_run(document: DocxDocument, node_id: str) -> tuple[Paragraph, int]:
     if run_index >= len(paragraph.runs):
         raise ValueError(f"Unable to resolve run index {run_index} for node {node_id}.")
     return paragraph, run_index
+
+
+def _locate_paragraph(document: DocxDocument, paragraph_id: str) -> Paragraph:
+    match = TOP_LEVEL_PARAGRAPH_ID_RE.fullmatch(paragraph_id)
+    if match:
+        return document.paragraphs[int(match.group("paragraph"))]
+
+    match = TABLE_PARAGRAPH_ID_RE.fullmatch(paragraph_id)
+    if not match:
+        raise ValueError(f"Unsupported paragraph id for run rebuild: {paragraph_id}")
+
+    table = _find_table_by_index(document, int(match.group("table")))
+    row = table.rows[int(match.group("row"))]
+    cell = row.cells[int(match.group("cell"))]
+    return cell.paragraphs[int(match.group("paragraph"))]
+
+
+def _replace_paragraph_runs(
+    paragraph: Paragraph, paragraph_id: str, desired_nodes: list[dict[str, Any]]
+) -> None:
+    source_runs = {
+        f"{paragraph_id}_r_{run_idx}": run
+        for run_idx, run in enumerate(paragraph.runs)
+    }
+    for child in list(paragraph._element):
+        if child.tag == qn("w:r"):
+            paragraph._element.remove(child)
+
+    for desired_node in desired_nodes:
+        source_run_id = desired_node.get("sourceRunId") or desired_node.get("id")
+        if not isinstance(source_run_id, str) or source_run_id not in source_runs:
+            raise ValueError(
+                f"Unable to resolve source run '{source_run_id}' for rebuilt paragraph '{paragraph_id}'."
+            )
+        text = desired_node.get("text", "")
+        if not isinstance(text, str):
+            text = str(text)
+        cloned_run = deepcopy(source_runs[source_run_id]._element)
+        _set_run_text(cloned_run, text)
+        paragraph._element.append(cloned_run)
+        rebuilt_run = Run(cloned_run, paragraph)
+        style = desired_node.get("style")
+        _apply_style(rebuilt_run, paragraph, style if isinstance(style, dict) else None)
+
+
+def _apply_rebuilt_paragraphs_to_document(
+    document: DocxDocument, nodes: list[dict[str, Any]], metadata: dict[str, Any] | None
+) -> set[str]:
+    rebuilt_specs = _read_rebuild_paragraph_specs(nodes, metadata)
+    rebuilt_node_ids: set[str] = set()
+    for paragraph_id, desired_nodes in rebuilt_specs.items():
+        paragraph = _locate_paragraph(document, paragraph_id)
+        _replace_paragraph_runs(paragraph, paragraph_id, desired_nodes)
+        rebuilt_node_ids.update(
+            node.get("id")
+            for node in desired_nodes
+            if isinstance(node, dict) and isinstance(node.get("id"), str) and node.get("id").strip()
+        )
+    return rebuilt_node_ids
 
 
 def _merge_paragraph(document: DocxDocument, target_node_id: str) -> None:
@@ -443,11 +590,26 @@ def write_docx_from_ir(input_json: Path, output_docx: Path) -> None:
             raise ValueError(
                 "DocumentIR metadata.inputDocxPath or metadata.workingDocxPath is required for DOCX-derived nodes."
             )
-        _write_rebuilt_docx(nodes, output_docx)
+        _write_rebuilt_docx(nodes, output_docx, metadata if isinstance(metadata, dict) else None)
         return
 
     document = Document(str(input_docx_path))
-    _apply_styles_to_document(document, _collect_styles_by_node_id(nodes))
+    rebuilt_node_ids = _apply_rebuilt_paragraphs_to_document(
+        document, nodes, metadata if isinstance(metadata, dict) else None
+    )
+    _apply_styles_to_document(
+        document,
+        _collect_styles_by_node_id(
+            [
+                node
+                for node in nodes
+                if isinstance(node, dict)
+                and isinstance(node.get("id"), str)
+                and node.get("id") not in rebuilt_node_ids
+            ]
+        ),
+    )
+    _apply_page_layout(document, metadata if isinstance(metadata, dict) else None)
     document.save(str(output_docx))
 
 

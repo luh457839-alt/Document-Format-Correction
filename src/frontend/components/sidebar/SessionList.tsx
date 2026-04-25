@@ -3,9 +3,10 @@ import { useChatStore } from '../../store/useChatStore';
 
 interface SessionListProps {
   searchQuery: string;
+  onSelectSession?: () => void;
 }
 
-export const SessionList: React.FC<SessionListProps> = ({ searchQuery }) => {
+export const SessionList: React.FC<SessionListProps> = ({ searchQuery, onSelectSession }) => {
   const { sessions, currentSessionId, setCurrentSession, isLoadingSessions, renameSession, deleteSession } =
     useChatStore();
   const [menuSessionId, setMenuSessionId] = useState<string | null>(null);
@@ -67,6 +68,11 @@ export const SessionList: React.FC<SessionListProps> = ({ searchQuery }) => {
     }
   };
 
+  const handleSessionSelect = async (sessionId: string) => {
+    await setCurrentSession(sessionId);
+    onSelectSession?.();
+  };
+
   if (isLoadingSessions && filteredSessions.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-sm text-gray-500">
@@ -94,7 +100,7 @@ export const SessionList: React.FC<SessionListProps> = ({ searchQuery }) => {
           }`}
         >
           <button
-            onClick={() => void setCurrentSession(session.sessionId)}
+            onClick={() => void handleSessionSelect(session.sessionId)}
             className="min-w-0 flex-1 text-left focus:outline-none focus-visible:outline-none"
           >
             {editingSessionId === session.sessionId ? (

@@ -9,11 +9,727 @@ from urllib import error, request
 from unittest.mock import patch
 from uuid import uuid4
 
+from src.python.api.template_bridge import TemplateBridgeError
 from src.python.api.ts_agent_bridge import TsAgentBridgeError
 from src.python.gui.web_api import WebApiConfig, WebApiServer
 
 
 class WebApiHttpRegressionTest(unittest.TestCase):
+    def test_template_configs_scan_root_templates_json_files(self) -> None:
+        root = Path(".tmp") / f"web-api-template-configs-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        templates_dir = root / "templates"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        (templates_dir / "contract.json").write_text("{}", encoding="utf-8")
+        (templates_dir / "notes.txt").write_text("ignored", encoding="utf-8")
+
+        try:
+            server = WebApiServer(
+                WebApiConfig(
+                    port=0,
+                    front_dist_dir=front_dist_dir,
+                    upload_dir=upload_dir,
+                    templates_dir=templates_dir,
+                )
+            )
+            server.start()
+            try:
+                response = self._get_json(f"{server.base_url}/api/templates/configs")
+            finally:
+                server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(response["status"], 200)
+        self.assertEqual(response["json"]["configs"][0]["fileName"], "contract.json")
+        self.assertEqual(response["json"]["configs"][0]["path"], str(templates_dir / "contract.json"))
+
+    def test_template_import_document_saves_docx_and_rejects_non_docx(self) -> None:
+        root = Path(".tmp") / f"web-api-template-import-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        templates_dir = root / "templates"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        docx_path = root / "input.docx"
+        txt_path = root / "input.txt"
+        docx_path.write_bytes(b"PK\x03\x04docx")
+        txt_path.write_text("nope", encoding="utf-8")
+
+        try:
+            server = WebApiServer(
+                WebApiConfig(
+                    port=0,
+                    front_dist_dir=front_dist_dir,
+                    upload_dir=upload_dir,
+                    templates_dir=templates_dir,
+                )
+            )
+            server.start()
+            try:
+                accepted = self._post_multipart(
+                    f"{server.base_url}/api/templates/import-document",
+                    docx_path,
+                )
+                rejected = self._post_multipart(
+                    f"{server.base_url}/api/templates/import-document",
+                    txt_path,
+                )
+            finally:
+                server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(accepted["status"], 200)
+        self.assertEqual(accepted["json"]["document"]["fileName"], "input.docx")
+        self.assertTrue(Path(accepted["json"]["document"]["uploadedPath"]).name.endswith("-input.docx"))
+        self.assertEqual(rejected["status"], 400)
+        self.assertIn(".docx", rejected["json"]["error"]["message"])
+
+    def test_template_runs_validate_inputs_and_return_real_bridge_job_snapshot(self) -> None:
+        root = Path(".tmp") / f"web-api-template-runs-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        templates_dir = root / "templates"
+        output_dir = root / "output"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        document_path = upload_dir / "input.docx"
+        template_path = templates_dir / "template.json"
+        output_path = output_dir / "formatted.docx"
+        document_path.write_bytes(b"PK\x03\x04docx")
+        template_path.write_text("{}", encoding="utf-8")
+        output_path.write_bytes(b"PK\x03\x04result")
+
+        try:
+            with patch(
+                "src.python.gui.web_api.run_template_job",
+                return_value={
+                    "status": "executed",
+                    "validation_result": {"passed": True, "issues": []},
+                    "execution_result": {
+                        "applied": True,
+                        "output_docx_path": str(output_path),
+                        "change_summary": "模板已套用到正文样式",
+                        "issues": [],
+                    },
+                },
+            ):
+                server = WebApiServer(
+                    WebApiConfig(
+                        port=0,
+                        front_dist_dir=front_dist_dir,
+                        upload_dir=upload_dir,
+                        templates_dir=templates_dir,
+                        output_dir=output_dir,
+                    )
+                )
+                server.start()
+                try:
+                    missing = self._post_json(f"{server.base_url}/api/templates/runs", {})
+                    created = self._post_json(
+                        f"{server.base_url}/api/templates/runs",
+                        {
+                            "documentPath": str(document_path),
+                            "templatePath": str(template_path),
+                        },
+                    )
+                    job_id = created["json"]["job"]["jobId"]
+                    polled = self._get_json(f"{server.base_url}/api/templates/runs/{job_id}")
+                    time.sleep(0.2)
+                    completed = self._get_json(f"{server.base_url}/api/templates/runs/{job_id}")
+                finally:
+                    server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(missing["status"], 400)
+        self.assertEqual(created["status"], 202)
+        self.assertEqual(created["json"]["job"]["status"], "queued")
+        self.assertEqual(polled["status"], 200)
+        self.assertIn(polled["json"]["job"]["status"], {"queued", "running", "completed"})
+        self.assertEqual(completed["status"], 200)
+        self.assertEqual(completed["json"]["job"]["status"], "completed")
+        self.assertEqual(completed["json"]["job"]["summary"], "模板已套用到正文样式")
+        self.assertEqual(completed["json"]["job"]["outputPath"], str(output_path))
+        self.assertEqual(completed["json"]["outputPath"], str(output_path))
+        self.assertNotIn("debug", completed["json"]["job"])
+        self.assertEqual(
+            [step["id"] for step in completed["json"]["job"]["steps"]],
+            ["load_inputs", "run_template_pipeline", "validate_result", "materialize_output"],
+        )
+
+    def test_template_run_poll_returns_failed_validation_issue(self) -> None:
+        root = Path(".tmp") / f"web-api-template-run-failed-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        templates_dir = root / "templates"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        document_path = upload_dir / "input.docx"
+        template_path = templates_dir / "template.json"
+        document_path.write_bytes(b"PK\x03\x04docx")
+        template_path.write_text("{}", encoding="utf-8")
+        report = {
+            "status": "failed",
+            "validation_result": {
+                "passed": False,
+                "issues": [{"error_code": "missing_heading", "message": "缺少一级标题"}],
+            },
+            "execution_result": {
+                "applied": False,
+                "issues": [{"error_code": "missing_heading", "message": "缺少一级标题"}],
+            },
+        }
+
+        try:
+            with patch("src.python.gui.web_api.run_template_job", return_value=report):
+                server = WebApiServer(
+                    WebApiConfig(
+                        port=0,
+                        front_dist_dir=front_dist_dir,
+                        upload_dir=upload_dir,
+                        templates_dir=templates_dir,
+                    )
+                )
+                server.start()
+                try:
+                    created = self._post_json(
+                        f"{server.base_url}/api/templates/runs",
+                        {
+                            "documentPath": str(document_path),
+                            "templatePath": str(template_path),
+                        },
+                    )
+                    job_id = created["json"]["job"]["jobId"]
+                    time.sleep(0.2)
+                    failed = self._get_json(f"{server.base_url}/api/templates/runs/{job_id}")
+                finally:
+                    server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(failed["status"], 200)
+        self.assertEqual(failed["json"]["job"]["status"], "failed")
+        self.assertNotIn("outputPath", failed["json"])
+        self.assertEqual(failed["json"]["job"]["summary"], "缺少一级标题")
+        self.assertEqual(failed["json"]["job"]["error"]["message"], "缺少一级标题")
+        validate_step = next(step for step in failed["json"]["job"]["steps"] if step["id"] == "validate_result")
+        self.assertEqual(validate_step["status"], "failed")
+        self.assertEqual(validate_step["detail"], "missing_heading: 缺少一级标题")
+
+    def test_template_run_poll_returns_refinement_summary_for_failed_conflict(self) -> None:
+        root = Path(".tmp") / f"web-api-template-run-refinement-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        templates_dir = root / "templates"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        document_path = upload_dir / "input.docx"
+        template_path = templates_dir / "template.json"
+        document_path.write_bytes(b"PK\x03\x04docx")
+        template_path.write_text("{}", encoding="utf-8")
+        report = {
+            "status": "failed",
+            "classification_result": {
+                "conflicts": [
+                    {
+                        "paragraph_id": "p_0",
+                        "candidate_semantic_keys": ["title", "body"],
+                        "reason": "first pass conflict",
+                    }
+                ],
+                "diagnostics": {
+                    "refined_paragraphs": [
+                        {
+                            "paragraph_id": "p_0",
+                            "first_pass": {
+                                "semantic_keys": ["title", "body"],
+                                "candidate_semantic_keys": ["title", "body", "blank_or_unknown"],
+                                "confidence": 0.52,
+                                "reason": "标题和正文特征都命中",
+                                "source": "conflict",
+                            },
+                            "second_pass": {
+                                "semantic_key": "title",
+                                "candidate_semantic_keys": ["title", "body"],
+                                "confidence": 0.48,
+                                "reason": "上下文仍不足以收敛",
+                            },
+                            "outcome": "rejected_conflict",
+                        }
+                    ]
+                },
+            },
+            "validation_result": {
+                "passed": False,
+                "issues": [
+                    {
+                        "error_code": "classification_conflict",
+                        "message": "段落分类仍然冲突",
+                        "paragraph_ids": ["p_0"],
+                    }
+                ],
+            },
+            "execution_result": {
+                "applied": False,
+                "issues": [],
+            },
+        }
+
+        try:
+            with patch("src.python.gui.web_api.run_template_job", return_value=report):
+                server = WebApiServer(
+                    WebApiConfig(
+                        port=0,
+                        front_dist_dir=front_dist_dir,
+                        upload_dir=upload_dir,
+                        templates_dir=templates_dir,
+                    )
+                )
+                server.start()
+                try:
+                    created = self._post_json(
+                        f"{server.base_url}/api/templates/runs",
+                        {
+                            "documentPath": str(document_path),
+                            "templatePath": str(template_path),
+                        },
+                    )
+                    job_id = created["json"]["job"]["jobId"]
+                    time.sleep(0.2)
+                    failed = self._get_json(f"{server.base_url}/api/templates/runs/{job_id}")
+                finally:
+                    server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(failed["status"], 200)
+        self.assertEqual(failed["json"]["job"]["status"], "failed")
+        self.assertEqual(
+            failed["json"]["job"]["debug"]["refinementSummary"],
+            [
+                {
+                    "paragraphId": "p_0",
+                    "firstPass": {
+                        "semanticKeys": ["title", "body"],
+                        "candidateSemanticKeys": ["title", "body", "blank_or_unknown"],
+                        "confidence": 0.52,
+                        "reason": "标题和正文特征都命中",
+                        "source": "conflict",
+                    },
+                    "secondPass": {
+                        "semanticKey": "title",
+                        "candidateSemanticKeys": ["title", "body"],
+                        "confidence": 0.48,
+                        "reason": "上下文仍不足以收敛",
+                    },
+                    "outcome": "rejected_conflict",
+                }
+            ],
+        )
+        validate_step = next(step for step in failed["json"]["job"]["steps"] if step["id"] == "validate_result")
+        self.assertEqual(validate_step["status"], "failed")
+        self.assertIn("classification_conflict: 段落分类仍然冲突", validate_step["detail"])
+        self.assertIn("paragraph=p_0", validate_step["detail"])
+        self.assertIn("first_pass=title, body", validate_step["detail"])
+        self.assertIn("second_pass=title", validate_step["detail"])
+        self.assertIn("outcome=rejected_conflict", validate_step["detail"])
+
+    def test_template_run_poll_falls_back_to_conflict_candidates_when_refinement_missing(self) -> None:
+        root = Path(".tmp") / f"web-api-template-run-conflict-fallback-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        templates_dir = root / "templates"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        document_path = upload_dir / "input.docx"
+        template_path = templates_dir / "template.json"
+        document_path.write_bytes(b"PK\x03\x04docx")
+        template_path.write_text("{}", encoding="utf-8")
+        report = {
+            "status": "failed",
+            "classification_result": {
+                "conflicts": [
+                    {
+                        "paragraph_id": "p_9",
+                        "candidate_semantic_keys": ["title", "body"],
+                        "reason": "raw conflict",
+                    }
+                ]
+            },
+            "validation_result": {
+                "passed": False,
+                "issues": [
+                    {
+                        "error_code": "classification_conflict",
+                        "message": "段落分类仍然冲突",
+                        "paragraph_ids": ["p_9"],
+                    }
+                ],
+            },
+            "execution_result": {
+                "applied": False,
+                "issues": [],
+            },
+        }
+
+        try:
+            with patch("src.python.gui.web_api.run_template_job", return_value=report):
+                server = WebApiServer(
+                    WebApiConfig(
+                        port=0,
+                        front_dist_dir=front_dist_dir,
+                        upload_dir=upload_dir,
+                        templates_dir=templates_dir,
+                    )
+                )
+                server.start()
+                try:
+                    created = self._post_json(
+                        f"{server.base_url}/api/templates/runs",
+                        {
+                            "documentPath": str(document_path),
+                            "templatePath": str(template_path),
+                        },
+                    )
+                    job_id = created["json"]["job"]["jobId"]
+                    time.sleep(0.2)
+                    failed = self._get_json(f"{server.base_url}/api/templates/runs/{job_id}")
+                finally:
+                    server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(failed["status"], 200)
+        self.assertEqual(
+            failed["json"]["job"]["debug"]["refinementSummary"],
+            [
+                {
+                    "paragraphId": "p_9",
+                    "firstPass": {
+                        "candidateSemanticKeys": ["title", "body"],
+                        "reason": "raw conflict",
+                        "source": "conflict",
+                    },
+                    "outcome": "rejected_conflict",
+                }
+            ],
+        )
+        validate_step = next(step for step in failed["json"]["job"]["steps"] if step["id"] == "validate_result")
+        self.assertIn("candidate_keys=title, body", validate_step["detail"])
+
+    def test_template_run_poll_formats_numbering_issue_diagnostics(self) -> None:
+        root = Path(".tmp") / f"web-api-template-run-numbering-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        templates_dir = root / "templates"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        document_path = upload_dir / "input.docx"
+        template_path = templates_dir / "template.json"
+        document_path.write_bytes(b"PK\x03\x04docx")
+        template_path.write_text("{}", encoding="utf-8")
+        report = {
+            "status": "failed",
+            "validation_result": {
+                "passed": False,
+                "issues": [
+                    {
+                        "error_code": "numbering_pattern_not_allowed",
+                        "message": "paragraph 'p_29' numbering prefix '3.1' is not allowed by template",
+                        "semantic_key": "body_paragraph",
+                        "paragraph_ids": ["p_29"],
+                        "diagnostics": {
+                            "semantic_key": "body_paragraph",
+                            "numbering_prefix": "3.1",
+                            "rule_source": "semantic_rule",
+                            "allowed_patterns": ["^\\d+\\.\\d+(?:\\.\\d+)*[)）、．。、]?$"],
+                        },
+                    }
+                ],
+            },
+            "execution_result": {
+                "applied": False,
+                "issues": [],
+            },
+        }
+
+        try:
+            with patch("src.python.gui.web_api.run_template_job", return_value=report):
+                server = WebApiServer(
+                    WebApiConfig(
+                        port=0,
+                        front_dist_dir=front_dist_dir,
+                        upload_dir=upload_dir,
+                        templates_dir=templates_dir,
+                    )
+                )
+                server.start()
+                try:
+                    created = self._post_json(
+                        f"{server.base_url}/api/templates/runs",
+                        {
+                            "documentPath": str(document_path),
+                            "templatePath": str(template_path),
+                        },
+                    )
+                    job_id = created["json"]["job"]["jobId"]
+                    time.sleep(0.2)
+                    failed = self._get_json(f"{server.base_url}/api/templates/runs/{job_id}")
+                finally:
+                    server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(failed["status"], 200)
+        self.assertEqual(failed["json"]["job"]["status"], "failed")
+        validate_step = next(step for step in failed["json"]["job"]["steps"] if step["id"] == "validate_result")
+        self.assertEqual(
+            validate_step["detail"],
+            "numbering_pattern_not_allowed: paragraph 'p_29' numbering prefix '3.1' is not allowed by template "
+            "[semantic=body_paragraph; prefix=3.1; rule=semantic_rule; "
+            "allowed=^\\d+\\.\\d+(?:\\.\\d+)*[)）、．。、]?$]",
+        )
+
+    def test_template_run_poll_returns_bridge_stage_failure_detail(self) -> None:
+        root = Path(".tmp") / f"web-api-template-run-bridge-error-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        templates_dir = root / "templates"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        document_path = upload_dir / "input.docx"
+        template_path = templates_dir / "template.json"
+        document_path.write_bytes(b"PK\x03\x04docx")
+        template_path.write_text("{}", encoding="utf-8")
+
+        try:
+            config_warnings = [
+                {
+                    "code": "planner_chat_host_mismatch",
+                    "scope": "planner",
+                    "message": "Planner Base URL host differs from Chat Base URL host.",
+                }
+            ]
+            bridge_error = TemplateBridgeError(
+                "E_TEMPLATE_CLASSIFICATION_REQUEST: request timed out",
+                code="E_TEMPLATE_CLASSIFICATION_REQUEST",
+                stage="classification_request_failed",
+                stage_timings_ms={
+                    "observation_ms": 12,
+                    "classification_request_ms": 300000,
+                    "validation_ms": 0,
+                    "execution_ms": 0,
+                },
+                stderr_summary=(
+                    "classification_request_start endpoint=mock.example/v1/chat/completions model=gpt timeoutMs=300000"
+                ),
+            )
+            with patch(
+                "src.python.gui.web_api.run_template_job",
+                side_effect=bridge_error,
+            ), patch(
+                "src.python.gui.web_api.collect_model_config_warnings",
+                return_value=config_warnings,
+            ):
+                server = WebApiServer(
+                    WebApiConfig(
+                        port=0,
+                        front_dist_dir=front_dist_dir,
+                        upload_dir=upload_dir,
+                        templates_dir=templates_dir,
+                    )
+                )
+                server.start()
+                try:
+                    created = self._post_json(
+                        f"{server.base_url}/api/templates/runs",
+                        {
+                            "documentPath": str(document_path),
+                            "templatePath": str(template_path),
+                        },
+                    )
+                    job_id = created["json"]["job"]["jobId"]
+                    time.sleep(0.2)
+                    failed = self._get_json(f"{server.base_url}/api/templates/runs/{job_id}")
+                finally:
+                    server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(failed["status"], 200)
+        self.assertEqual(failed["json"]["job"]["status"], "failed")
+        self.assertEqual(failed["json"]["job"]["warnings"], config_warnings)
+        self.assertEqual(failed["json"]["job"]["error"]["code"], "E_TEMPLATE_CLASSIFICATION_REQUEST")
+        self.assertEqual(failed["json"]["job"]["error"]["stage"], "classification_request_failed")
+        self.assertIn("classification_request_start", failed["json"]["job"]["error"]["stderrSummary"])
+        pipeline_step = next(
+            step for step in failed["json"]["job"]["steps"] if step["id"] == "run_template_pipeline"
+        )
+        self.assertEqual(pipeline_step["status"], "failed")
+        self.assertIn("stage_timings_ms", pipeline_step["detail"])
+        self.assertIn("classification_request=300000ms", pipeline_step["detail"])
+        self.assertIn("stderr:", pipeline_step["detail"])
+
+    def test_template_run_poll_merges_runtime_warnings_into_job_warnings(self) -> None:
+        root = Path(".tmp") / f"web-api-template-run-warnings-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        templates_dir = root / "templates"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+        document_path = upload_dir / "input.docx"
+        template_path = templates_dir / "template.json"
+        output_path = upload_dir / "output.docx"
+        document_path.write_bytes(b"PK\x03\x04docx")
+        template_path.write_text("{}", encoding="utf-8")
+        output_path.write_bytes(b"PK\x03\x04docx")
+        config_warnings = [
+            {
+                "code": "planner_chat_host_mismatch",
+                "scope": "planner",
+                "message": "Planner Base URL host differs from Chat Base URL host.",
+            }
+        ]
+        report = {
+            "status": "executed",
+            "warnings": [
+                {
+                    "code": "body_paragraph_suspicious_numbering_prefix",
+                    "message": "Paragraph matched body_paragraph but still starts with numbering prefix '2.'; output was generated with a warning.",
+                    "paragraph_ids": ["p2"],
+                    "diagnostics": {
+                        "semantic_key": "body_paragraph",
+                        "text_excerpt": "2. 现将有关事项通知如下。",
+                        "numbering_prefix": "2.",
+                        "detected_prefix": "2.",
+                        "warning_kind": "body_paragraph_numbering_prefix",
+                    },
+                }
+            ],
+            "validation_result": {
+                "passed": True,
+                "issues": [],
+            },
+            "execution_result": {
+                "applied": True,
+                "output_docx_path": str(output_path),
+                "change_summary": "模板已套用到正文样式",
+                "issues": [],
+            },
+        }
+
+        try:
+            with patch("src.python.gui.web_api.run_template_job", return_value=report), patch(
+                "src.python.gui.web_api.collect_model_config_warnings",
+                return_value=config_warnings,
+            ):
+                server = WebApiServer(
+                    WebApiConfig(
+                        port=0,
+                        front_dist_dir=front_dist_dir,
+                        upload_dir=upload_dir,
+                        templates_dir=templates_dir,
+                    )
+                )
+                server.start()
+                try:
+                    created = self._post_json(
+                        f"{server.base_url}/api/templates/runs",
+                        {
+                            "documentPath": str(document_path),
+                            "templatePath": str(template_path),
+                        },
+                    )
+                    job_id = created["json"]["job"]["jobId"]
+                    time.sleep(0.2)
+                    completed = self._get_json(f"{server.base_url}/api/templates/runs/{job_id}")
+                finally:
+                    server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(completed["status"], 200)
+        self.assertEqual(completed["json"]["job"]["status"], "completed")
+        self.assertEqual(
+            completed["json"]["job"]["warnings"],
+            [
+                {
+                    "code": "planner_chat_host_mismatch",
+                    "scope": "planner",
+                    "message": "Planner Base URL host differs from Chat Base URL host.",
+                },
+                {
+                    "code": "body_paragraph_suspicious_numbering_prefix",
+                    "scope": "template_run",
+                    "message": "Paragraph matched body_paragraph but still starts with numbering prefix '2.'; output was generated with a warning.",
+                    "paragraphIds": ["p2"],
+                    "diagnostics": {
+                        "semantic_key": "body_paragraph",
+                        "text_excerpt": "2. 现将有关事项通知如下。",
+                        "numbering_prefix": "2.",
+                        "detected_prefix": "2.",
+                        "warning_kind": "body_paragraph_numbering_prefix",
+                    },
+                },
+            ],
+        )
+
+    def test_template_open_output_returns_structured_error_for_missing_path(self) -> None:
+        root = Path(".tmp") / f"web-api-template-open-{uuid4().hex}"
+        front_dist_dir = root / "front"
+        upload_dir = root / "uploads"
+        templates_dir = root / "templates"
+        front_dist_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (front_dist_dir / "index.html").write_text("<!doctype html><title>test</title>", encoding="utf-8")
+
+        try:
+            server = WebApiServer(
+                WebApiConfig(
+                    port=0,
+                    front_dist_dir=front_dist_dir,
+                    upload_dir=upload_dir,
+                    templates_dir=templates_dir,
+                )
+            )
+            server.start()
+            try:
+                response = self._post_json(
+                    f"{server.base_url}/api/templates/open-output",
+                    {"outputPath": str(root / "missing.docx")},
+                )
+            finally:
+                server.stop()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.assertEqual(response["status"], 409)
+        self.assertEqual(response["json"]["error"]["code"], "E_OUTPUT_NOT_FOUND")
+
     def test_web_api_updates_titles_and_deletes_sessions(self) -> None:
         bridge_state = {
             "sessions": {

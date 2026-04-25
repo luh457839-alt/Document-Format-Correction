@@ -82,6 +82,99 @@ describe("docx write operation tool", () => {
     });
   });
 
+  it("supports document-level set_page_layout without a target in dry-run", async () => {
+    const tool = new DocxWriteOperationTool();
+    const input: ToolExecutionInput = {
+      doc: {
+        id: "doc1",
+        version: "v1",
+        nodes: [{ id: "n1", text: "hello" }]
+      },
+      operation: {
+        id: "op1",
+        type: "set_page_layout",
+        payload: {
+          paper_size: "A4",
+          margin_top_cm: 3.7,
+          margin_bottom_cm: 3.5,
+          margin_left_cm: 2.8,
+          margin_right_cm: 2.6
+        }
+      },
+      context: { taskId: "t1", stepId: "s1", dryRun: true }
+    };
+
+    await tool.validate(input);
+    const output = await tool.execute(input);
+    expect(output.summary).toContain("Dry-run");
+    expect(output.doc.metadata?.page_layout).toEqual({
+      paper_size: "A4",
+      margin_top_cm: 3.7,
+      margin_bottom_cm: 3.5,
+      margin_left_cm: 2.8,
+      margin_right_cm: 2.6
+    });
+    expect(output.doc.nodes[0].style).toBeUndefined();
+  });
+
+  it("supports paragraph spacing and indent payloads in dry-run", async () => {
+    const tool = new DocxWriteOperationTool();
+    const spacing: ToolExecutionInput = {
+      doc: {
+        id: "doc1",
+        version: "v1",
+        nodes: [{ id: "n1", text: "hello", style: { font_name: "Calibri" } }]
+      },
+      operation: {
+        id: "op1",
+        type: "set_paragraph_spacing",
+        targetNodeId: "n1",
+        payload: { before_pt: 6, after_pt: 3 }
+      },
+      context: { taskId: "t1", stepId: "s1", dryRun: true }
+    };
+    const indent: ToolExecutionInput = {
+      doc: spacing.doc,
+      operation: {
+        id: "op2",
+        type: "set_paragraph_indent",
+        targetNodeId: "n1",
+        payload: { first_line_indent_chars: 2, font_size_pt: 15 }
+      },
+      context: { taskId: "t1", stepId: "s2", dryRun: true }
+    };
+
+    await tool.validate(spacing);
+    await tool.validate(indent);
+    await expect(tool.execute(spacing)).resolves.toMatchObject({
+      doc: {
+        nodes: [
+          {
+            style: {
+              font_name: "Calibri",
+              space_before_pt: 6,
+              space_after_pt: 3,
+              operation: "set_paragraph_spacing"
+            }
+          }
+        ]
+      }
+    });
+    await expect(tool.execute(indent)).resolves.toMatchObject({
+      doc: {
+        nodes: [
+          {
+            style: {
+              font_name: "Calibri",
+              first_line_indent_pt: 30,
+              operation: "set_paragraph_indent"
+            }
+          }
+        ]
+      }
+    });
+  });
+
   it("rejects mismatched payload for set_size", async () => {
     const tool = new DocxWriteOperationTool();
     const input: ToolExecutionInput = {

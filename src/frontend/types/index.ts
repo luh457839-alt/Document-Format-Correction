@@ -73,6 +73,44 @@ export interface TurnJobSnapshot {
   remoteSessionId?: string;
   anchorMessageId?: string;
   isCollapsed?: boolean;
+  warnings?: ModelConfigWarning[];
+}
+
+export interface TemplateConfigOption {
+  fileName: string;
+  path: string;
+}
+
+export interface TemplateDocument {
+  fileName: string;
+  uploadedPath: string;
+}
+
+export type TemplateProgressStep = TurnProgressStep;
+
+export interface TemplateJobRefinementPass {
+  semanticKeys?: string[];
+  semanticKey?: string;
+  candidateSemanticKeys?: string[];
+  confidence?: number;
+  reason?: string;
+  source?: string;
+}
+
+export interface TemplateJobRefinementSummaryItem {
+  paragraphId: string;
+  firstPass?: TemplateJobRefinementPass;
+  secondPass?: TemplateJobRefinementPass;
+  outcome: string;
+}
+
+export interface TemplateJobDebug {
+  refinementSummary?: TemplateJobRefinementSummaryItem[];
+}
+
+export interface TemplateJobSnapshot extends TurnJobSnapshot {
+  outputPath?: string;
+  debug?: TemplateJobDebug;
 }
 
 export interface PendingChatTurn {
@@ -103,6 +141,13 @@ export interface PlannerConfigSection extends ModelConfigSection {
 export interface ModelConfigPayload {
   chat: ModelConfigSection;
   planner: PlannerConfigSection;
+  warnings?: ModelConfigWarning[];
+}
+
+export interface ModelConfigWarning {
+  code: string;
+  scope: string;
+  message: string;
 }
 
 export interface UserSettings {

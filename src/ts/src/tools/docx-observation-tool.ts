@@ -5,6 +5,15 @@ import { DOMParser } from "@xmldom/xmldom";
 import { AgentError } from "../core/errors.js";
 import { getAgentMediaDir } from "../core/project-paths.js";
 import type { DocumentIR, LineSpacingValue, Tool, ToolExecutionInput, ToolExecutionOutput } from "../core/types.js";
+import type {
+  DocxObservationState as DocumentState,
+  ObservationFormulaNode as FormulaNode,
+  ObservationImageNode as ImageNode,
+  ObservationParagraphNode as ParagraphNode,
+  ObservationTableNode as TableNode,
+  ObservationTextRunNode as TextRunNode,
+  TextRunStyle
+} from "./docx-observation-schema.js";
 
 export interface ParseDocxOptions {
   docxPath: string;
@@ -12,75 +21,6 @@ export interface ParseDocxOptions {
   pythonCommand?: string;
   scriptPath?: string;
   allowFallback?: boolean;
-}
-
-export interface TextRunStyle {
-  font_name: string;
-  font_size_pt: number;
-  line_spacing?: LineSpacingValue;
-  font_color: string;
-  is_bold: boolean;
-  is_italic: boolean;
-  is_underline: boolean;
-  is_strike: boolean;
-  highlight_color: string;
-  is_all_caps: boolean;
-  paragraph_alignment: string;
-}
-
-interface TextRunNode {
-  id: string;
-  node_type: "text_run";
-  content: string;
-  style: TextRunStyle;
-}
-
-interface ImageNode {
-  id: string;
-  node_type: "image";
-  src: string;
-  size: {
-    width: number;
-    height: number;
-  };
-}
-
-interface FormulaNode {
-  id: string;
-  node_type: "formula";
-  format: "latex";
-  content: string;
-}
-
-interface ParagraphNode {
-  id: string;
-  node_type: "paragraph";
-  children: Array<TextRunNode | ImageNode | FormulaNode>;
-}
-
-interface TableNode {
-  id: string;
-  node_type: "table";
-  rows: Array<{
-    row_index: number;
-    cells: Array<{
-      cell_index: number;
-      paragraphs: Array<{
-        node_type: "paragraph";
-        children: Array<TextRunNode | ImageNode | FormulaNode>;
-      }>;
-      tables: TableNode[];
-    }>;
-  }>;
-}
-
-export interface DocumentState {
-  document_meta: {
-    total_paragraphs: number;
-    total_tables: number;
-    warning?: string;
-  };
-  nodes: Array<ParagraphNode | TableNode>;
 }
 
 interface Counters {
@@ -123,7 +63,21 @@ interface ParseContext {
 }
 
 const DEFAULT_MEDIA_DIR = getAgentMediaDir();
-const BUILTIN_STYLE_DEFAULTS: Omit<Required<TextRunStyle>, "line_spacing"> = {
+const BUILTIN_STYLE_DEFAULTS: Required<
+  Pick<
+    TextRunStyle,
+    | "font_name"
+    | "font_size_pt"
+    | "font_color"
+    | "is_bold"
+    | "is_italic"
+    | "is_underline"
+    | "is_strike"
+    | "highlight_color"
+    | "is_all_caps"
+    | "paragraph_alignment"
+  >
+> = {
   font_name: "Times New Roman",
   font_size_pt: 12,
   font_color: "000000",
@@ -135,6 +89,8 @@ const BUILTIN_STYLE_DEFAULTS: Omit<Required<TextRunStyle>, "line_spacing"> = {
   is_all_caps: false,
   paragraph_alignment: "left"
 };
+
+export type { DocumentState, ParagraphNode, TableNode, TextRunStyle };
 
 export async function parseDocxToState(options: ParseDocxOptions): Promise<DocumentState> {
   const allowFallback = options.allowFallback ?? false;

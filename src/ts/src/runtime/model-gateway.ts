@@ -1,11 +1,7 @@
-import { AgentError, asAppError } from "../core/errors.js";
-import {
-  buildModelResponseErrorMessage,
-  parseOpenAiCompatibleChatText
-} from "../core/model-response.js";
+import { AgentError } from "../core/errors.js";
 import type { ChatModelConfig, ConversationMessage, PlannerModelConfig } from "../core/types.js";
+import { OpenAiCompatibleChatClient } from "../llm/openai-compatible-client.js";
 import {
-  asCompatibleModelRequestError,
   resolveChatModelConfig,
   resolvePlannerModelConfig
 } from "../planner/llm-planner.js";
@@ -116,12 +112,14 @@ export interface LlmAgentModelGatewayDeps {
 export class LlmAgentModelGateway implements AgentModelGateway {
   private readonly chatConfig: ChatModelConfig;
   private readonly plannerConfig: PlannerModelConfig;
-  private readonly fetchImpl: typeof fetch;
+  private readonly chatClient: OpenAiCompatibleChatClient<ChatModelConfig>;
+  private readonly plannerClient: OpenAiCompatibleChatClient<PlannerModelConfig>;
 
   constructor(deps: LlmAgentModelGatewayDeps = {}) {
     this.chatConfig = resolveChatModelConfig(deps.chatConfig, deps.env);
     this.plannerConfig = resolvePlannerModelConfig(deps.plannerConfig, deps.env);
-    this.fetchImpl = deps.fetchImpl ?? fetch;
+    this.chatClient = new OpenAiCompatibleChatClient(this.chatConfig, { fetchImpl: deps.fetchImpl });
+    this.plannerClient = new OpenAiCompatibleChatClient(this.plannerConfig, { fetchImpl: deps.fetchImpl });
   }
 
   async decideTurn(input: {
@@ -254,27 +252,32 @@ export class LlmAgentModelGateway implements AgentModelGateway {
     },
     config: PlannerModelConfig
   ): Promise<T> {
-    const content = await this.requestCompletion(
-      {
-        messages: [
-          { role: "system", content: input.systemPrompt },
-          { role: "user", content: JSON.stringify(input.userPayload, null, 2) }
-        ],
-        ...(config.useJsonSchema === false
-          ? {}
-          : {
-              responseFormat: {
-                type: "json_schema",
-                json_schema: {
-                  name: input.schemaName,
-                  strict: config.schemaStrict !== false,
-                  schema: input.schema
-                }
-              }
-            })
-      },
-      config
-    );
+    const messages: ConversationMessage[] = [
+      { role: "system", content: input.systemPrompt },
+      { role: "user", content: JSON.stringify(input.userPayload, null, 2) }
+    ];
+    const content =
+      config.useJsonSchema === false
+        ? await this.plannerClient.requestCompletion({
+            messages,
+            requestCode: "E_AGENT_MODEL_REQUEST",
+            upstreamCode: "E_AGENT_MODEL_UPSTREAM",
+            responseCode: "E_AGENT_MODEL_RESPONSE",
+            requestLabel: "Agent model request",
+            payloadLabel: "Model payload"
+          })
+        : await this.plannerClient.requestJson({
+            messages,
+            requestCode: "E_AGENT_MODEL_REQUEST",
+            upstreamCode: "E_AGENT_MODEL_UPSTREAM",
+            responseCode: "E_AGENT_MODEL_RESPONSE",
+            requestLabel: "Agent model request",
+            payloadLabel: "Model payload",
+            schemaName: input.schemaName,
+            schema: input.schema,
+            strict: config.schemaStrict !== false,
+            parseContent: (content) => content
+          });
     return input.parseContent(content);
   }
 
@@ -285,69 +288,15 @@ export class LlmAgentModelGateway implements AgentModelGateway {
     },
     config: ChatModelConfig
   ): Promise<string> {
-    return await this.requestCompletion(
-      {
-        messages: [{ role: "system", content: input.systemPrompt }, ...input.messages]
-      },
-      config
-    );
-  }
-
-  private async requestCompletion(
-    input: {
-      messages: ConversationMessage[];
-      responseFormat?: Record<string, unknown>;
-    },
-    config: ChatModelConfig | PlannerModelConfig
-  ): Promise<string> {
-    const endpoint = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
-    const maxRetries = config.maxRetries ?? 0;
-    let lastErr: unknown;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? 30000);
-      try {
-        const resp = await this.fetchImpl(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${config.apiKey}`
-          },
-          body: JSON.stringify({
-            model: config.model,
-            temperature: config.temperature ?? 0,
-            messages: input.messages,
-            ...(input.responseFormat ? { response_format: input.responseFormat } : {}),
-            stream: false
-          }),
-          signal: controller.signal
-        });
-        const raw = await resp.text();
-        if (!resp.ok) {
-          throw new AgentError({
-            code: "E_AGENT_MODEL_UPSTREAM",
-            message: `Agent model request failed (${resp.status}): ${raw.slice(0, 200)}`,
-            retryable: resp.status >= 500
-          });
-        }
-        return extractContent(raw);
-      } catch (err) {
-        lastErr = err;
-        const appErr = asAppError(err, "E_AGENT_MODEL_REQUEST");
-        if (!appErr.retryable || attempt === maxRetries) {
-          break;
-        }
-      } finally {
-        clearTimeout(timeout);
-      }
-    }
-
-    throw asCompatibleModelRequestError(
-      lastErr ?? new Error("Unknown model request failure"),
-      "E_AGENT_MODEL_REQUEST",
-      "Agent model request"
-    );
+    const client = config === this.chatConfig ? this.chatClient : this.plannerClient;
+    return await client.requestCompletion({
+      messages: [{ role: "system", content: input.systemPrompt }, ...input.messages],
+      requestCode: "E_AGENT_MODEL_REQUEST",
+      upstreamCode: "E_AGENT_MODEL_UPSTREAM",
+      responseCode: "E_AGENT_MODEL_RESPONSE",
+      requestLabel: "Agent model request",
+      payloadLabel: "Model payload"
+    });
   }
 }
 
@@ -375,30 +324,6 @@ function summarizeObservationForReply(observation: PythonDocxObservationState): 
     })),
     node_samples: observation.nodes.slice(0, 6)
   };
-}
-
-function extractContent(rawText: string): string {
-  try {
-    const result = parseOpenAiCompatibleChatText(rawText);
-    if (result.content === null) {
-      throw new AgentError({
-        code: "E_AGENT_MODEL_RESPONSE",
-        message: buildModelResponseErrorMessage("Model payload", result),
-        retryable: false
-      });
-    }
-    return result.content;
-  } catch (err) {
-    if (err instanceof AgentError) {
-      throw err;
-    }
-    throw new AgentError({
-      code: "E_AGENT_MODEL_RESPONSE",
-      message: `Model returned invalid envelope JSON: ${String(err)}`,
-      retryable: false,
-      cause: err
-    });
-  }
 }
 
 export function parseTurnDecision(content: string): TurnDecision {

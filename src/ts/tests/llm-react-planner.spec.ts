@@ -393,6 +393,9 @@ describe("LlmReActPlanner.decideNext", () => {
     expect(userPrompt).toContain("finishRules");
     expect(userPrompt).toContain("set_font_color");
     expect(userPrompt).toContain("set_highlight_color");
+    expect(userPrompt).toContain("set_page_layout");
+    expect(userPrompt).toContain("set_paragraph_spacing");
+    expect(userPrompt).toContain("set_paragraph_indent");
     expect(userPrompt).toContain("targetSelector");
     expect(userPrompt).toContain("body");
   });

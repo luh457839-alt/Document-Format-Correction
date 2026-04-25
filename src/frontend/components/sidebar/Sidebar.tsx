@@ -3,12 +3,27 @@ import { SearchBox } from './SearchBox';
 import { SessionList } from './SessionList';
 import { useChatStore } from '../../store/useChatStore';
 
-export const Sidebar: React.FC = () => {
+interface SidebarProps {
+  isTemplateRoute?: boolean;
+  onNavigateHome?: () => void;
+  onNavigateTemplates?: () => void;
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ isTemplateRoute = false, onNavigateHome, onNavigateTemplates }) => {
   const { startDraftSession, isLoadingSessions, toggleSettings, isSettingsOpen } = useChatStore();
   const [searchQuery, setSearchQuery] = useState('');
 
   const handleCreateSession = async () => {
+    onNavigateHome?.();
     startDraftSession();
+  };
+
+  const handleFixedTemplateEdit = () => {
+    if (isTemplateRoute) {
+      onNavigateHome?.();
+      return;
+    }
+    onNavigateTemplates?.();
   };
 
   return (
@@ -17,15 +32,23 @@ export const Sidebar: React.FC = () => {
 
       <div className="p-4 border-b border-gray-800">
         <button
+          type="button"
           onClick={() => void handleCreateSession()}
           disabled={isLoadingSessions}
           className="w-full py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-400 text-white rounded-md text-sm font-medium transition-colors"
         >
           {isLoadingSessions ? '处理中...' : '+ 新建对话'}
         </button>
+        <button
+          type="button"
+          onClick={handleFixedTemplateEdit}
+          className="mt-2 w-full py-2 border border-gray-600 text-gray-300 hover:bg-gray-700 rounded-md text-sm font-medium transition-colors"
+        >
+          固定模板修改
+        </button>
       </div>
 
-      <SessionList searchQuery={searchQuery} />
+      <SessionList searchQuery={searchQuery} onSelectSession={onNavigateHome} />
 
       <div className="border-t border-gray-800 p-4">
         <button

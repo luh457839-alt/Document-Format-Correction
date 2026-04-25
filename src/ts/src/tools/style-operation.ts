@@ -112,6 +112,58 @@ export function normalizeWriteOperationPayload(operation: Operation): Record<str
       return {
         is_all_caps: pickRequiredBoolean(operation.type, "is_all_caps", payload.is_all_caps, payload.isAllCaps)
       };
+    case "set_page_layout": {
+      const pageLayout: Record<string, unknown> = {};
+      const paperSize = pickPaperSize(payload.paper_size, payload.paperSize);
+      if (paperSize !== undefined) {
+        pageLayout.paper_size = paperSize;
+      }
+      for (const [outputField, values] of [
+        ["margin_top_cm", [payload.margin_top_cm, payload.marginTopCm]],
+        ["margin_bottom_cm", [payload.margin_bottom_cm, payload.marginBottomCm]],
+        ["margin_left_cm", [payload.margin_left_cm, payload.marginLeftCm]],
+        ["margin_right_cm", [payload.margin_right_cm, payload.marginRightCm]]
+      ] as const) {
+        const margin = pickPositiveNumber(...values);
+        if (margin !== undefined) {
+          pageLayout[outputField] = margin;
+        }
+      }
+      if (Object.keys(pageLayout).length === 0) {
+        throw invalidPayload(operation.type, "set_page_layout requires paper_size or at least one positive margin_*_cm");
+      }
+      return pageLayout;
+    }
+    case "set_paragraph_spacing": {
+      const before = pickPositiveOrZeroNumber(payload.before_pt, payload.beforePt, payload.space_before_pt, payload.spaceBeforePt);
+      const after = pickPositiveOrZeroNumber(payload.after_pt, payload.afterPt, payload.space_after_pt, payload.spaceAfterPt);
+      const spacing: Record<string, unknown> = {};
+      if (before !== undefined) {
+        spacing.space_before_pt = before;
+      }
+      if (after !== undefined) {
+        spacing.space_after_pt = after;
+      }
+      if (!Object.values(spacing).some((value) => typeof value === "number" && value > 0)) {
+        throw invalidPayload(operation.type, "set_paragraph_spacing requires before_pt or after_pt with at least one positive value");
+      }
+      return spacing;
+    }
+    case "set_paragraph_indent": {
+      const directIndent = pickPositiveOrZeroNumber(
+        payload.first_line_indent_pt,
+        payload.firstLineIndentPt
+      );
+      if (directIndent !== undefined) {
+        return { first_line_indent_pt: directIndent };
+      }
+      const indentChars = pickPositiveNumber(payload.first_line_indent_chars, payload.firstLineIndentChars);
+      if (indentChars === undefined) {
+        throw invalidPayload(operation.type, "set_paragraph_indent requires first_line_indent_pt or first_line_indent_chars");
+      }
+      const fontSize = pickPositiveNumber(payload.font_size_pt, payload.fontSizePt, payload.fontSize) ?? 12;
+      return { first_line_indent_pt: indentChars * fontSize };
+    }
     case "merge_paragraph":
       return {};
     case "split_paragraph": {
@@ -124,6 +176,22 @@ export function normalizeWriteOperationPayload(operation: Operation): Record<str
     default:
       return payload as Record<string, unknown>;
   }
+}
+
+function pickPaperSize(...values: unknown[]): "A4" | "Letter" | undefined {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "a4") {
+      return "A4";
+    }
+    if (normalized === "letter") {
+      return "Letter";
+    }
+  }
+  return undefined;
 }
 
 function invalidPayload(operationType: Operation["type"], message: string): AgentError {
@@ -151,6 +219,21 @@ function pickPositiveNumber(...values: unknown[]): number | undefined {
     if (typeof value === "string" && value.trim()) {
       const parsed = Number(value);
       if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function pickPositiveOrZeroNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) {
         return parsed;
       }
     }

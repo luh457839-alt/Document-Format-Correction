@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .project_paths import CONFIG_PATH
 
@@ -113,6 +114,27 @@ def build_ts_agent_env(config: AppModelConfig) -> dict[str, str]:
             "true" if config.planner.schema_strict else "false"
         )
     return env
+
+
+def collect_model_config_warnings(config: AppModelConfig) -> list[dict[str, str]]:
+    warnings: list[dict[str, str]] = []
+    warnings.extend(_collect_endpoint_format_warnings("chat", "Chat", config.chat.base_url))
+    warnings.extend(_collect_endpoint_format_warnings("planner", "Planner", config.planner.base_url))
+
+    chat_host = _read_endpoint_host(config.chat.base_url)
+    planner_host = _read_endpoint_host(config.planner.base_url)
+    if chat_host and planner_host and chat_host != planner_host:
+        warnings.append(
+            {
+                "code": "planner_chat_host_mismatch",
+                "scope": "planner",
+                "message": (
+                    f"Planner Base URL host '{planner_host}' differs from Chat Base URL host '{chat_host}'. "
+                    "模板分类请求会走 planner 配置，可能命中与聊天不同的上游地址。"
+                ),
+            }
+        )
+    return warnings
 
 
 def _config_from_raw(raw: Any, defaults: AppModelConfig) -> AppModelConfig:
@@ -263,11 +285,72 @@ def _format_float(value: float) -> str:
     return text or "0"
 
 
+def _collect_endpoint_format_warnings(scope: str, label: str, base_url: str) -> list[dict[str, str]]:
+    raw = base_url.strip()
+    if not raw:
+        return [
+            {
+                "code": "base_url_missing",
+                "scope": scope,
+                "message": f"{label} Base URL 为空。应配置为 OpenAI-compatible 端点，例如 http://localhost:8080/v1。",
+            }
+        ]
+
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return [
+            {
+                "code": "base_url_invalid",
+                "scope": scope,
+                "message": (
+                    f"{label} Base URL '{raw}' 不是有效的 http(s) 地址。"
+                    "应配置为 OpenAI-compatible 端点，例如 http://localhost:8080/v1。"
+                ),
+            }
+        ]
+
+    normalized_path = parsed.path.rstrip("/")
+    if normalized_path and normalized_path.endswith("/v1"):
+        return []
+
+    if not normalized_path:
+        return [
+            {
+                "code": "base_url_missing_v1",
+                "scope": scope,
+                "message": (
+                    f"{label} Base URL '{raw}' 缺少 /v1 路径。"
+                    "OpenAI-compatible 接口通常应指向 http(s)://<host>/.../v1。"
+                ),
+            }
+        ]
+
+    return [
+        {
+            "code": "base_url_not_openai_compatible",
+            "scope": scope,
+            "message": (
+                f"{label} Base URL '{raw}' 看起来不像 OpenAI-compatible /v1 端点。"
+                "请确认网关路径是否正确。"
+            ),
+        }
+    ]
+
+
+def _read_endpoint_host(base_url: str) -> str:
+    try:
+        parsed = urlparse(base_url.strip())
+    except Exception:
+        return ""
+    return parsed.netloc.strip()
+
+
 __all__ = [
     "AppModelConfig",
     "ChatModelConfig",
     "PlannerModelConfig",
     "DEFAULT_CONFIG_PATH",
+    "collect_model_config_warnings",
     "build_ts_agent_env",
     "default_model_config",
     "load_model_config",

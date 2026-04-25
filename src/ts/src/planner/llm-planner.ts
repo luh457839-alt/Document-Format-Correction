@@ -1,8 +1,4 @@
 import { AgentError, asAppError } from "../core/errors.js";
-import {
-  buildModelResponseErrorMessage,
-  parseOpenAiCompatibleChatText
-} from "../core/model-response.js";
 import type {
   ChatModelConfig,
   DocumentIR,
@@ -14,6 +10,12 @@ import type {
   PlannerCompatMode,
   PlannerModelConfig
 } from "../core/types.js";
+import {
+  OpenAiCompatibleChatClient,
+  asCompatibleModelRequestError,
+  isSchemaUnsupported
+} from "../llm/openai-compatible-client.js";
+import { resolveRequestTimeoutControl } from "../llm/request-timeout-control.js";
 import {
   buildSemanticSelectorGuidance,
   sanitizePromptMetadata,
@@ -33,6 +35,9 @@ const OPERATION_TYPES: ReadonlySet<OperationType> = new Set([
   "set_strike",
   "set_highlight_color",
   "set_all_caps",
+  "set_page_layout",
+  "set_paragraph_spacing",
+  "set_paragraph_indent",
   "merge_paragraph",
   "split_paragraph"
 ]);
@@ -40,21 +45,21 @@ const PLAN_TOOL_NAMES = ["inspect_document", "write_operation"] as const;
 const PLAN_SYSTEM_PROMPT =
   "你是一个文档格式规划引擎。请只返回符合 Plan schema 的有效 JSON，不要输出额外解释。 " +
   "每个 write_operation 步骤都必须包含 operation.id、operation.type 和 operation.payload。 " +
-  "只能使用标准化 payload 字段：set_font -> { font_name }，set_size -> { font_size_pt }，set_line_spacing -> { line_spacing }，set_alignment -> { paragraph_alignment }，set_font_color -> { font_color }，set_bold -> { is_bold }，set_italic -> { is_italic }，set_underline -> { is_underline }，set_strike -> { is_strike }，set_highlight_color -> { highlight_color }，set_all_caps -> { is_all_caps }，merge_paragraph -> { }，split_paragraph -> { split_offset }。 " +
-  "每个 write_operation 必须指定 operation.targetNodeId 或 operation.targetSelector；针对正文、标题、列表等语义批量范围优先使用 targetSelector。 " +
+  "只能使用标准化 payload 字段：set_font -> { font_name }，set_size -> { font_size_pt }，set_line_spacing -> { line_spacing }，set_alignment -> { paragraph_alignment }，set_font_color -> { font_color }，set_bold -> { is_bold }，set_italic -> { is_italic }，set_underline -> { is_underline }，set_strike -> { is_strike }，set_highlight_color -> { highlight_color }，set_all_caps -> { is_all_caps }，set_page_layout -> { paper_size, margin_top_cm, margin_bottom_cm, margin_left_cm, margin_right_cm }，set_paragraph_spacing -> { before_pt, after_pt }，set_paragraph_indent -> { first_line_indent_pt }，merge_paragraph -> { }，split_paragraph -> { split_offset }。 " +
+  "除 set_page_layout 是文档级操作且不需要 target 外，每个 write_operation 必须指定 operation.targetNodeId 或 operation.targetSelector；针对正文、标题、列表等语义批量范围优先使用 targetSelector。 " +
   "对于可批量的语义写操作，优先输出 1 个带 targetSelector 的语义 step，由 runtime 展开成 targetNodeId 或 targetNodeIds；除非操作本身不可批量，否则不要自己枚举每个命中节点。每个 write_operation 都必须能基于给定文档结构语义上真实执行。 " +
   "不要使用 'placeholder'、'unused'、'target' 之类的占位 id；样式修改类写操作不要输出空 payload。只有在无法落到真实文档范围时，才降级为 inspect_document。 " +
   "You are a document-format planning engine. Return valid JSON matching the Plan schema and no extra commentary. " +
-  "Every write_operation step must include operation.id, operation.type, and operation.payload. Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_line_spacing -> { line_spacing }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
-  "Each write_operation must specify either operation.targetNodeId or operation.targetSelector. Use targetSelector for semantic batch requests like body text, headings, or list items. For batchable semantic writes, prefer one semantic write_operation step; the runtime will expand matched selectors into targetNodeId or targetNodeIds. Do not enumerate every matched node yourself unless the operation is inherently non-batchable. Never omit semantic fields. Every write_operation must be semantically executable against the provided document structure. Never use placeholder ids like 'placeholder', 'unused', or 'target'. Never emit an empty payload for style-changing writes. Only downgrade to inspect_document when no real document range can be grounded.";
+  "Every write_operation step must include operation.id, operation.type, and operation.payload. Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_line_spacing -> { line_spacing }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, set_page_layout -> { paper_size, margin_top_cm, margin_bottom_cm, margin_left_cm, margin_right_cm }, set_paragraph_spacing -> { before_pt, after_pt }, set_paragraph_indent -> { first_line_indent_pt }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
+  "Each write_operation must specify either operation.targetNodeId or operation.targetSelector except document-level set_page_layout. Use targetSelector for semantic batch requests like body text, headings, or list items. For batchable semantic writes, prefer one semantic write_operation step; the runtime will expand matched selectors into targetNodeId or targetNodeIds. Do not enumerate every matched node yourself unless the operation is inherently non-batchable. Never omit semantic fields. Every write_operation must be semantically executable against the provided document structure. Never use placeholder ids like 'placeholder', 'unused', or 'target'. Never emit an empty payload for style-changing writes. Only downgrade to inspect_document when no real document range can be grounded.";
 const PLAN_REPAIR_SYSTEM_PROMPT =
   "你负责修复无效的文档格式 Plan。请只返回 1 个有效的 Plan JSON 对象。 " +
-  "尽量保留用户目标和已有的有效字段，并修复校验失败项。只能使用标准化 payload 字段；每个 write_operation 都必须提供 targetNodeId 或 targetSelector。 " +
+  "尽量保留用户目标和已有的有效字段，并修复校验失败项。只能使用标准化 payload 字段；除 set_page_layout 外每个 write_operation 都必须提供 targetNodeId 或 targetSelector。 " +
   "只要文档结构允许，就优先把无效写操作修成语义上可执行的有效写操作；不要使用 'placeholder'、'unused'、'target' 之类的占位 id，也不要输出空 payload。 " +
   "如果某个写操作无法落到真实节点或选择器，就把它改成只读 inspect_document，而不是留空字段。 " +
   "You repair invalid document-format plans. Return exactly one valid Plan JSON object. Preserve the user's goal, preserve valid existing fields when possible, and fix validation failures. " +
-  "Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_line_spacing -> { line_spacing }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
-  "Every write_operation must provide targetNodeId or targetSelector. Repair invalid writes into semantically executable writes whenever the document structure allows it. Never use placeholder ids like 'placeholder', 'unused', or 'target'. Never emit an empty payload for style-changing writes. If a write cannot be grounded to a real node or selector, convert it to a read-only inspect_document step instead of leaving fields blank.";
+  "Use standardized payload fields only: set_font -> { font_name }, set_size -> { font_size_pt }, set_line_spacing -> { line_spacing }, set_alignment -> { paragraph_alignment }, set_font_color -> { font_color }, set_bold -> { is_bold }, set_italic -> { is_italic }, set_underline -> { is_underline }, set_strike -> { is_strike }, set_highlight_color -> { highlight_color }, set_all_caps -> { is_all_caps }, set_page_layout -> { paper_size, margin_top_cm, margin_bottom_cm, margin_left_cm, margin_right_cm }, set_paragraph_spacing -> { before_pt, after_pt }, set_paragraph_indent -> { first_line_indent_pt }, merge_paragraph -> { }, split_paragraph -> { split_offset }. " +
+  "Every write_operation must provide targetNodeId or targetSelector except set_page_layout. Repair invalid writes into semantically executable writes whenever the document structure allows it. Never use placeholder ids like 'placeholder', 'unused', or 'target'. Never emit an empty payload for style-changing writes. If a write cannot be grounded to a real node or selector, convert it to a read-only inspect_document step instead of leaving fields blank.";
 const MAX_PROMPT_NODES = 50;
 const MAX_PROMPT_NODE_IDS = 200;
 const MAX_NODE_TEXT_PREVIEW = 160;
@@ -234,11 +239,11 @@ export function resolvePlannerRuntimeMode(
 
 export class LlmPlanner implements Planner {
   private readonly config: PlannerModelConfig;
-  private readonly fetchImpl: typeof fetch;
+  private readonly client: OpenAiCompatibleChatClient<PlannerModelConfig>;
 
   constructor(deps: LlmPlannerDeps = {}) {
     this.config = resolvePlannerModelConfig(deps.config, deps.env);
-    this.fetchImpl = deps.fetchImpl ?? fetch;
+    this.client = new OpenAiCompatibleChatClient(this.config, { fetchImpl: deps.fetchImpl });
   }
 
   async createPlan(goal: string, doc: DocumentIR, options?: { timeoutMs?: number }): Promise<Plan> {
@@ -266,98 +271,44 @@ export class LlmPlanner implements Planner {
     systemPrompt = PLAN_SYSTEM_PROMPT,
     requestTimeoutMs?: number
   ): Promise<string> {
-    const endpoint = `${this.config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
-    const maxRetries = this.config.maxRetries ?? 0;
-    let lastErr: unknown;
     const timeoutControl = resolveRequestTimeoutControl(this.config.timeoutMs, requestTimeoutMs, {
       requestTimeoutCode: "E_PLANNER_REQUEST_TIMEOUT",
       requestTimeoutMessage: "Planner request timed out",
-      taskTimeoutMessage: "Task budget exceeded while waiting for planner response."
+      budgetTimeoutMessage: "Task budget exceeded while waiting for planner response."
     });
 
-    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-      if (timeoutControl.timeoutMs <= 0) {
-        throw timeoutControl.toTimeoutError();
-      }
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutControl.timeoutMs);
-      try {
-        const resp = await this.fetchImpl(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.config.apiKey}`
-          },
-          body: JSON.stringify({
-            model: this.config.model,
-            temperature: this.config.temperature ?? 0,
-            messages: [
-              {
-                role: "system",
-                content: systemPrompt
-              },
-              { role: "user", content: prompt }
-            ],
-            ...(this.config.useJsonSchema !== false
-              ? {
-                  response_format: {
-                    type: "json_schema",
-                    json_schema: {
-                      name: "document_plan",
-                      strict: this.config.schemaStrict !== false,
-                      schema: buildPlanJsonSchema()
-                    }
-                  }
-                }
-              : {}),
-            stream: false
-          }),
-          signal: controller.signal
-        });
-        const payload = await resp.text();
-        if (!resp.ok) {
-          if (this.config.useJsonSchema !== false && isSchemaUnsupported(resp.status, payload)) {
-            throw new AgentError({
-              code: "E_PLANNER_SCHEMA_UNSUPPORTED",
-              message: `Planner upstream does not support response_format json_schema (${resp.status}).`,
-              retryable: false
-            });
-          }
-          throw new AgentError({
-            code: "E_PLANNER_UPSTREAM",
-            message: `Planner model request failed (${resp.status}): ${payload.slice(0, 200)}`,
-            retryable: resp.status >= 500
-          });
-        }
-        const content = extractContent(payload);
-        return content;
-      } catch (err) {
-        if (controller.signal.aborted) {
-          const timeoutErr = timeoutControl.toTimeoutError(err);
-          if (timeoutControl.budgetClipped) {
-            throw timeoutErr;
-          }
-          lastErr = timeoutErr;
-          if (attempt === maxRetries) {
-            break;
-          }
-          await sleep(150 * (attempt + 1));
-          continue;
-        }
-        lastErr = err;
-        const appErr = asAppError(err, "E_PLANNER_REQUEST");
-        const retryable = appErr.retryable || isNetworkError(err);
-        if (!retryable || attempt === maxRetries) break;
-        await sleep(150 * (attempt + 1));
-      } finally {
-        clearTimeout(timeout);
-      }
+    if (timeoutControl.timeoutMs <= 0) {
+      throw timeoutControl.toTimeoutError();
     }
-    throw asCompatibleModelRequestError(
-      lastErr ?? new Error("Unknown planner request failure"),
-      "E_PLANNER_REQUEST",
-      "Planner model request"
-    );
+    return await this.client.requestCompletion({
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt
+        },
+        { role: "user", content: prompt }
+      ],
+      ...(this.config.useJsonSchema !== false
+        ? {
+            responseFormat: {
+              type: "json_schema",
+              json_schema: {
+                name: "document_plan",
+                strict: this.config.schemaStrict !== false,
+                schema: buildPlanJsonSchema()
+              }
+            }
+          }
+        : {}),
+      requestCode: "E_PLANNER_REQUEST",
+      upstreamCode: "E_PLANNER_UPSTREAM",
+      responseCode: "E_PLANNER_MODEL_RESPONSE",
+      requestLabel: "Planner model request",
+      payloadLabel: "Planner payload",
+      requestTimeoutMs: timeoutControl.timeoutMs,
+      schemaUnsupportedCode: this.config.useJsonSchema !== false ? "E_PLANNER_SCHEMA_UNSUPPORTED" : undefined,
+      onAbortError: (cause) => timeoutControl.toTimeoutError(cause)
+    });
   }
 }
 
@@ -387,6 +338,15 @@ function buildPrompt(goal: string, doc: DocumentIR): string {
           set_strike: { is_strike: "boolean" },
           set_highlight_color: { highlight_color: "word-color-name or mapped hex alias" },
           set_all_caps: { is_all_caps: "boolean" },
+          set_page_layout: {
+            paper_size: "A4 | Letter",
+            margin_top_cm: "positive number",
+            margin_bottom_cm: "positive number",
+            margin_left_cm: "positive number",
+            margin_right_cm: "positive number"
+          },
+          set_paragraph_spacing: { before_pt: "number >= 0", after_pt: "number >= 0" },
+          set_paragraph_indent: { first_line_indent_pt: "number >= 0" },
           merge_paragraph: {},
           split_paragraph: { split_offset: "positive integer" }
         },
@@ -394,7 +354,7 @@ function buildPrompt(goal: string, doc: DocumentIR): string {
           "toolName=write_operation requires a non-empty operation object",
           "write_operation must include operation.id and operation.type",
           "operation must include payload",
-          "operation must include targetNodeId or targetSelector",
+          "operation must include targetNodeId or targetSelector except set_page_layout",
           "operation.targetNodeId must be one of availableNodeIds when present",
           "targetSelector.scope must be one of availableSelectorScopes",
           "use targetSelector for semantic groups like body or headings",
@@ -415,6 +375,9 @@ function buildPrompt(goal: string, doc: DocumentIR): string {
           "set_strike payload must use is_strike only",
           "set_highlight_color payload must use highlight_color only",
           "set_all_caps payload must use is_all_caps only",
+          "set_page_layout payload may use paper_size and margin_*_cm only",
+          "set_paragraph_spacing payload must use before_pt and/or after_pt",
+          "set_paragraph_indent payload must use first_line_indent_pt",
           "merge_paragraph payload must be an empty object",
           "split_paragraph payload must use split_offset only",
           "only downgrade to inspect_document when no real document range can be grounded"
@@ -473,6 +436,15 @@ function buildRepairPrompt(
           set_strike: { is_strike: "boolean" },
           set_highlight_color: { highlight_color: "word-color-name or mapped hex alias" },
           set_all_caps: { is_all_caps: "boolean" },
+          set_page_layout: {
+            paper_size: "A4 | Letter",
+            margin_top_cm: "positive number",
+            margin_bottom_cm: "positive number",
+            margin_left_cm: "positive number",
+            margin_right_cm: "positive number"
+          },
+          set_paragraph_spacing: { before_pt: "number >= 0", after_pt: "number >= 0" },
+          set_paragraph_indent: { first_line_indent_pt: "number >= 0" },
           merge_paragraph: {},
           split_paragraph: { split_offset: "positive integer" }
         },
@@ -480,7 +452,7 @@ function buildRepairPrompt(
           "toolName=write_operation requires a non-empty operation object",
           "write_operation must include operation.id and operation.type",
           "operation.targetNodeId must exactly match one value from availableNodeIds when present",
-          "operation must include targetNodeId or targetSelector",
+          "operation must include targetNodeId or targetSelector except set_page_layout",
           "targetSelector.scope must be one of availableSelectorScopes",
           "prefer one semantic write_operation step for batchable semantic edits",
           "runtime expands matched selectors into targetNodeId or targetNodeIds",
@@ -501,6 +473,9 @@ function buildRepairPrompt(
           "set_strike payload must use is_strike only",
           "set_highlight_color payload must use highlight_color only",
           "set_all_caps payload must use is_all_caps only",
+          "set_page_layout payload may use paper_size and margin_*_cm only",
+          "set_paragraph_spacing payload must use before_pt and/or after_pt",
+          "set_paragraph_indent payload must use first_line_indent_pt",
           "merge_paragraph payload must be an empty object",
           "split_paragraph payload must use split_offset only",
           "only downgrade to inspect_document when no real document range can be grounded"
@@ -579,30 +554,6 @@ function buildPlanJsonSchema(): Record<string, unknown> {
       }
     }
   };
-}
-
-function extractContent(rawText: string): string {
-  try {
-    const result = parseOpenAiCompatibleChatText(rawText);
-    if (result.content === null) {
-      throw new AgentError({
-        code: "E_PLANNER_MODEL_RESPONSE",
-        message: buildModelResponseErrorMessage("Planner upstream payload", result),
-        retryable: false
-      });
-    }
-    return result.content;
-  } catch (err) {
-    if (err instanceof AgentError) {
-      throw err;
-    }
-    throw new AgentError({
-      code: "E_PLANNER_MODEL_RESPONSE",
-      message: `Planner upstream returned non-JSON envelope: ${String(err)}`,
-      retryable: false,
-      cause: err
-    });
-  }
 }
 
 function parseAndValidatePlan(content: string, doc?: DocumentIR): Plan {
@@ -757,7 +708,7 @@ function parseOperation(op: unknown, idx: number, stepId: string, targetContext?
   const targetNodeIds = normalizeTargetNodeIds(raw.targetNodeIds, raw.target_node_ids);
   const selectorInput = firstDefined(raw.targetSelector, raw.target_selector, raw.selector);
   const targetSelector = selectorInput === undefined ? undefined : parseTargetSelector(selectorInput, idx);
-  if (!targetNodeId && !targetNodeIds?.length && !targetSelector) {
+  if (operationType !== "set_page_layout" && !targetNodeId && !targetNodeIds?.length && !targetSelector) {
     throw invalidStep(idx, "operation.targetNodeId or operation.targetSelector is required");
   }
   if (targetNodeId && isPlaceholderTargetId(targetNodeId)) {
@@ -982,6 +933,30 @@ function validateExecutablePayload(idx: number, operationType: OperationType, pa
   if (operationType === "set_all_caps" && !hasBoolean(payload, ["is_all_caps", "isAllCaps"])) {
     throw invalidStep(idx, "set_all_caps payload must include is_all_caps");
   }
+  if (
+    operationType === "set_page_layout" &&
+    !hasNonEmptyString(payload, ["paper_size", "paperSize"]) &&
+    !hasPositiveNumber(payload, ["margin_top_cm", "marginTopCm"]) &&
+    !hasPositiveNumber(payload, ["margin_bottom_cm", "marginBottomCm"]) &&
+    !hasPositiveNumber(payload, ["margin_left_cm", "marginLeftCm"]) &&
+    !hasPositiveNumber(payload, ["margin_right_cm", "marginRightCm"])
+  ) {
+    throw invalidStep(idx, "set_page_layout payload must include paper_size or margin_*_cm");
+  }
+  if (
+    operationType === "set_paragraph_spacing" &&
+    !hasPositiveNumber(payload, ["before_pt", "beforePt", "space_before_pt", "spaceBeforePt"]) &&
+    !hasPositiveNumber(payload, ["after_pt", "afterPt", "space_after_pt", "spaceAfterPt"])
+  ) {
+    throw invalidStep(idx, "set_paragraph_spacing payload must include before_pt or after_pt");
+  }
+  if (
+    operationType === "set_paragraph_indent" &&
+    !hasNonNegativeNumber(payload, ["first_line_indent_pt", "firstLineIndentPt"]) &&
+    !hasPositiveNumber(payload, ["first_line_indent_chars", "firstLineIndentChars"])
+  ) {
+    throw invalidStep(idx, "set_paragraph_indent payload must include first_line_indent_pt");
+  }
 }
 
 function isPlaceholderTargetId(value: string): boolean {
@@ -1154,6 +1129,27 @@ function isCanonicalPayload(operationType: OperationType, payload: Record<string
   if (operationType === "set_all_caps") {
     return typeof payload.is_all_caps === "boolean" || typeof payload.isAllCaps === "boolean";
   }
+  if (operationType === "set_page_layout") {
+    return (
+      hasNonEmptyString(payload, ["paper_size", "paperSize"]) ||
+      hasPositiveNumber(payload, ["margin_top_cm", "marginTopCm"]) ||
+      hasPositiveNumber(payload, ["margin_bottom_cm", "marginBottomCm"]) ||
+      hasPositiveNumber(payload, ["margin_left_cm", "marginLeftCm"]) ||
+      hasPositiveNumber(payload, ["margin_right_cm", "marginRightCm"])
+    );
+  }
+  if (operationType === "set_paragraph_spacing") {
+    return (
+      hasPositiveNumber(payload, ["before_pt", "beforePt", "space_before_pt", "spaceBeforePt"]) ||
+      hasPositiveNumber(payload, ["after_pt", "afterPt", "space_after_pt", "spaceAfterPt"])
+    );
+  }
+  if (operationType === "set_paragraph_indent") {
+    return (
+      hasNonNegativeNumber(payload, ["first_line_indent_pt", "firstLineIndentPt"]) ||
+      hasPositiveNumber(payload, ["first_line_indent_chars", "firstLineIndentChars"])
+    );
+  }
   return false;
 }
 
@@ -1163,6 +1159,10 @@ function hasNonEmptyString(payload: Record<string, unknown>, keys: string[]): bo
 
 function hasPositiveNumber(payload: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => isNonNegativeNumber(payload[key]) && Number(payload[key]) > 0);
+}
+
+function hasNonNegativeNumber(payload: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((key) => isNonNegativeNumber(payload[key]));
 }
 
 function hasBoolean(payload: Record<string, unknown>, keys: string[]): boolean {
@@ -1301,41 +1301,6 @@ function resolvePlannerCompatMode(
   return pickCompatMode(override.compatMode, env.TS_AGENT_PLANNER_COMPAT_MODE, "auto") ?? "auto";
 }
 
-function resolveRequestTimeoutControl(
-  configuredTimeoutMs: number | undefined,
-  requestTimeoutMs: number | undefined,
-  messages: {
-    requestTimeoutCode: string;
-    requestTimeoutMessage: string;
-    taskTimeoutMessage: string;
-  }
-): {
-  timeoutMs: number;
-  budgetClipped: boolean;
-  toTimeoutError: (cause?: unknown) => AgentError;
-} {
-  const baseTimeoutMs = configuredTimeoutMs ?? 30000;
-  const budgetClipped =
-    typeof requestTimeoutMs === "number" && Number.isFinite(requestTimeoutMs) && requestTimeoutMs < baseTimeoutMs;
-  const timeoutMs =
-    typeof requestTimeoutMs === "number" && Number.isFinite(requestTimeoutMs)
-      ? Math.max(0, Math.min(baseTimeoutMs, requestTimeoutMs))
-      : baseTimeoutMs;
-  return {
-    timeoutMs,
-    budgetClipped,
-    toTimeoutError: (cause?: unknown) =>
-      new AgentError({
-        code: budgetClipped ? "E_TASK_TIMEOUT" : messages.requestTimeoutCode,
-        message: budgetClipped
-          ? messages.taskTimeoutMessage
-          : `${messages.requestTimeoutMessage} after ${timeoutMs}ms.`,
-        retryable: false,
-        cause
-      })
-  };
-}
-
 function isNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
@@ -1346,32 +1311,6 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNetworkError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err.name === "AbortError" ||
-      err.name === "TimeoutError" ||
-      /network|fetch|timeout|aborted/i.test(err.message))
-  );
-}
-
-export function asCompatibleModelRequestError(
-  err: unknown,
-  fallbackCode: string,
-  requestLabel: string
-): AgentError {
-  const info = asAppError(err, fallbackCode);
-  if (isNetworkError(err) && /timeout|aborted/i.test(info.message)) {
-    return new AgentError({
-      code: fallbackCode,
-      message: `${requestLabel} timed out or was aborted. Local/small models may need compatibility mode or a longer timeout.`,
-      retryable: info.retryable,
-      cause: info.cause
-    });
-  }
-  return new AgentError(info);
 }
 
 function isLikelyLocalModelBackend(baseUrl: string | undefined, model: string | undefined): boolean {
@@ -1400,20 +1339,8 @@ function isLocalHost(host: string): boolean {
   return host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1";
 }
 
-export function isSchemaUnsupported(status: number, payload: string): boolean {
-  if (status < 400 || status >= 500) {
-    return false;
-  }
-  const lower = payload.toLowerCase();
-  const mentionsSchema = lower.includes("response_format") || lower.includes("json_schema");
-  const mentionsUnsupported =
-    lower.includes("not support") ||
-    lower.includes("unsupported") ||
-    lower.includes("unknown") ||
-    lower.includes("invalid");
-  return mentionsSchema && mentionsUnsupported;
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+export { asCompatibleModelRequestError, isSchemaUnsupported };

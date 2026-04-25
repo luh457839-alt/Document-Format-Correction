@@ -411,6 +411,11 @@ describe("llm planner createPlan", () => {
     expect(prompt).toContain("font_color");
     expect(prompt).toContain("highlight_color");
     expect(prompt).toContain("line_spacing");
+    expect(prompt).toContain("paper_size");
+    expect(prompt).toContain("margin_top_cm");
+    expect(prompt).toContain("before_pt");
+    expect(prompt).toContain("after_pt");
+    expect(prompt).toContain("first_line_indent_pt");
     expect(prompt).toContain("split_offset");
     expect(prompt).toContain("set_font");
     expect(prompt).toContain("set_size");
@@ -418,6 +423,9 @@ describe("llm planner createPlan", () => {
     expect(prompt).toContain("set_line_spacing");
     expect(prompt).toContain("set_highlight_color");
     expect(prompt).toContain("set_all_caps");
+    expect(prompt).toContain("set_page_layout");
+    expect(prompt).toContain("set_paragraph_spacing");
+    expect(prompt).toContain("set_paragraph_indent");
     expect(prompt).toContain("targetSelector");
     expect(prompt).toContain("body");
     expect(prompt).toContain("heading");

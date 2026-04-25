@@ -134,6 +134,29 @@ describe("DefaultValidator.preValidate", () => {
     await expect(validator.preValidate(batchedPlan, doc)).resolves.toBeUndefined();
   });
 
+  it("accepts document-level page layout without a target", async () => {
+    const validator = new DefaultValidator();
+    const plan = createPlan({
+      id: "s_page",
+      toolName: "write_operation",
+      readOnly: false,
+      idempotencyKey: "write:page",
+      operation: {
+        id: "op_page",
+        type: "set_page_layout",
+        payload: {
+          paper_size: "A4",
+          margin_top_cm: 3.7,
+          margin_bottom_cm: 3.5,
+          margin_left_cm: 2.8,
+          margin_right_cm: 2.6
+        }
+      }
+    });
+
+    await expect(validator.preValidate(plan, doc)).resolves.toBeUndefined();
+  });
+
   it("rejects invalid line spacing payloads and accepts exact spacing", async () => {
     const validator = new DefaultValidator();
     const invalidPlan = createPlan({

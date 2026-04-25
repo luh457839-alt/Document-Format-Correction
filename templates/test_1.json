@@ -1,0 +1,487 @@
+{
+  "template_meta": {
+    "id": "test_1",
+    "name": "宋体 Times New Roman 办公排版纯格式模板",
+    "version": "1.4.0",
+    "schema_version": "1.0",
+    "description": "仅保留格式写入映射的宽松模板，不对文档结构、顺序、编号、样式或内容做任何额外校验。",
+    "locale": "zh-CN",
+    "author": "Codex",
+    "tags": [
+      "custom",
+      "office-standard",
+      "format-only",
+      "simsun",
+      "times-new-roman"
+    ]
+  },
+  "semantic_blocks": [
+    {
+      "key": "cover_image",
+      "label": "图片段落",
+      "description": "图片相关段落的格式映射语义。",
+      "examples": [
+        "（图片段落）",
+        "图7.1.1 模型输出截图"
+      ],
+      "negative_examples": [
+        "项目实施方案",
+        "一、工作目标"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "document_title",
+      "label": "文档主标题",
+      "description": "主标题格式映射语义。",
+      "examples": [
+        "项目实施方案"
+      ],
+      "negative_examples": [
+        "一、工作目标",
+        "（一）基本原则"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "heading_level_1",
+      "label": "一级结构标题",
+      "description": "一级标题格式映射语义。",
+      "examples": [
+        "一、工作目标",
+        "第一章 总则"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "heading_level_2",
+      "label": "二级结构标题",
+      "description": "二级标题格式映射语义。",
+      "examples": [
+        "（一）基本原则",
+        "3.1 实验数据集"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "heading_level_3",
+      "label": "三级结构标题",
+      "description": "三级标题格式映射语义。",
+      "examples": [
+        "1. 实施步骤",
+        "3.1.1 数据来源"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "body_paragraph",
+      "label": "正文段落",
+      "description": "正文格式映射语义。",
+      "examples": [
+        "为进一步规范文档格式，现将有关要求通知如下。"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "list_item_level_0",
+      "label": "一级列表项",
+      "description": "一级列表格式映射语义。",
+      "examples": [
+        "- 统一使用宋体与 Times New Roman"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "list_item_level_1",
+      "label": "二级列表项",
+      "description": "二级列表格式映射语义。",
+      "examples": [
+        "  - 英文内容使用 Times New Roman"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "table_text",
+      "label": "表格文本",
+      "description": "表格文本格式映射语义。",
+      "examples": [
+        "指标 | 说明 | 备注"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "blank_or_unknown",
+      "label": "空白或未知段落",
+      "description": "空白或未知段落的兜底格式映射语义。",
+      "examples": [
+        "（空白段）",
+        "——"
+      ],
+      "required": false,
+      "multiple": true
+    }
+  ],
+  "layout_rules": {
+    "global_rules": {
+      "document_scope": "full_document",
+      "allow_unclassified_paragraphs": true,
+      "page_layout_reference": {
+        "margin_top_cm": 2.5,
+        "margin_bottom_cm": 2.0,
+        "margin_left_cm": 2.5,
+        "margin_right_cm": 2.0
+      }
+    },
+    "semantic_rules": [
+      {
+        "semantic_key": "cover_image",
+        "style_hints": {
+          "allow_empty_text": true
+        }
+      },
+      {
+        "semantic_key": "document_title",
+        "style_hints": {
+          "allow_empty_text": true
+        }
+      },
+      {
+        "semantic_key": "heading_level_1",
+        "style_hints": {
+          "allow_empty_text": true
+        }
+      },
+      {
+        "semantic_key": "heading_level_2",
+        "style_hints": {
+          "allow_empty_text": true
+        }
+      },
+      {
+        "semantic_key": "heading_level_3",
+        "style_hints": {
+          "allow_empty_text": true
+        }
+      },
+      {
+        "semantic_key": "body_paragraph",
+        "style_hints": {
+          "allow_empty_text": true
+        }
+      },
+      {
+        "semantic_key": "list_item_level_0",
+        "style_hints": {
+          "allow_empty_text": true
+        }
+      },
+      {
+        "semantic_key": "list_item_level_1",
+        "style_hints": {
+          "allow_empty_text": true
+        }
+      },
+      {
+        "semantic_key": "table_text",
+        "style_hints": {
+          "allow_empty_text": true
+        }
+      },
+      {
+        "semantic_key": "blank_or_unknown",
+        "style_hints": {
+          "allow_empty_text": true
+        }
+      }
+    ]
+  },
+  "operation_blocks": [
+    {
+      "semantic_key": "cover_image",
+      "text_style": {},
+      "paragraph_style": {}
+    },
+    {
+      "semantic_key": "document_title",
+      "text_style": {
+        "font_name": "SimSun",
+        "font_size_pt": 14,
+        "is_bold": true
+      },
+      "language_font_overrides": {
+        "zh": {
+          "font_name": "SimSun"
+        },
+        "en": {
+          "font_name": "Times New Roman"
+        }
+      },
+      "paragraph_style": {
+        "paragraph_alignment": "left",
+        "line_spacing": {
+          "mode": "exact",
+          "pt": 22
+        }
+      }
+    },
+    {
+      "semantic_key": "heading_level_1",
+      "text_style": {
+        "font_name": "SimSun",
+        "font_size_pt": 14,
+        "is_bold": true
+      },
+      "language_font_overrides": {
+        "zh": {
+          "font_name": "SimSun"
+        },
+        "en": {
+          "font_name": "Times New Roman"
+        }
+      },
+      "paragraph_style": {
+        "paragraph_alignment": "left",
+        "line_spacing": {
+          "mode": "exact",
+          "pt": 22
+        }
+      }
+    },
+    {
+      "semantic_key": "heading_level_2",
+      "text_style": {
+        "font_name": "SimSun",
+        "font_size_pt": 14,
+        "is_bold": true
+      },
+      "language_font_overrides": {
+        "zh": {
+          "font_name": "SimSun"
+        },
+        "en": {
+          "font_name": "Times New Roman"
+        }
+      },
+      "paragraph_style": {
+        "paragraph_alignment": "left",
+        "line_spacing": {
+          "mode": "exact",
+          "pt": 22
+        }
+      }
+    },
+    {
+      "semantic_key": "heading_level_3",
+      "text_style": {
+        "font_name": "SimSun",
+        "font_size_pt": 12,
+        "is_bold": true
+      },
+      "language_font_overrides": {
+        "zh": {
+          "font_name": "SimSun"
+        },
+        "en": {
+          "font_name": "Times New Roman"
+        }
+      },
+      "paragraph_style": {
+        "paragraph_alignment": "left",
+        "line_spacing": {
+          "mode": "exact",
+          "pt": 22
+        }
+      }
+    },
+    {
+      "semantic_key": "body_paragraph",
+      "text_style": {
+        "font_name": "SimSun",
+        "font_size_pt": 12,
+        "is_bold": false
+      },
+      "language_font_overrides": {
+        "zh": {
+          "font_name": "SimSun"
+        },
+        "en": {
+          "font_name": "Times New Roman"
+        }
+      },
+      "paragraph_style": {
+        "paragraph_alignment": "justify",
+        "line_spacing": {
+          "mode": "exact",
+          "pt": 22
+        },
+        "first_line_indent_chars": 2
+      }
+    },
+    {
+      "semantic_key": "list_item_level_0",
+      "text_style": {
+        "font_name": "SimSun",
+        "font_size_pt": 12,
+        "is_bold": false
+      },
+      "language_font_overrides": {
+        "zh": {
+          "font_name": "SimSun"
+        },
+        "en": {
+          "font_name": "Times New Roman"
+        }
+      },
+      "paragraph_style": {
+        "paragraph_alignment": "justify",
+        "line_spacing": {
+          "mode": "exact",
+          "pt": 22
+        }
+      }
+    },
+    {
+      "semantic_key": "list_item_level_1",
+      "text_style": {
+        "font_name": "SimSun",
+        "font_size_pt": 12,
+        "is_bold": false
+      },
+      "language_font_overrides": {
+        "zh": {
+          "font_name": "SimSun"
+        },
+        "en": {
+          "font_name": "Times New Roman"
+        }
+      },
+      "paragraph_style": {
+        "paragraph_alignment": "justify",
+        "line_spacing": {
+          "mode": "exact",
+          "pt": 22
+        }
+      }
+    },
+    {
+      "semantic_key": "table_text",
+      "text_style": {
+        "font_name": "SimSun",
+        "font_size_pt": 12,
+        "is_bold": false
+      },
+      "language_font_overrides": {
+        "zh": {
+          "font_name": "SimSun"
+        },
+        "en": {
+          "font_name": "Times New Roman"
+        }
+      },
+      "paragraph_style": {
+        "paragraph_alignment": "justify",
+        "line_spacing": {
+          "mode": "exact",
+          "pt": 22
+        }
+      }
+    },
+    {
+      "semantic_key": "blank_or_unknown",
+      "text_style": {},
+      "paragraph_style": {}
+    }
+  ],
+  "classification_contract": {
+    "scope": "paragraph",
+    "single_owner_per_paragraph": true,
+    "matches": [],
+    "unmatched_paragraph_ids": [],
+    "conflicts": [],
+    "overall_confidence": 0
+  },
+  "validation_policy": {
+    "enforce_validation": false,
+    "require_all_required_semantics": false,
+    "reject_conflicting_matches": false,
+    "reject_order_violations": false,
+    "reject_style_violations": false,
+    "reject_unmatched_when_required": false
+  },
+  "style_reference": {
+    "cover_image": {
+      "label": "图片段落",
+      "notes": "任意带图片证据的段落，不生成文字样式写操作。"
+    },
+    "document_title": {
+      "font_zh": "宋体",
+      "font_en": "Times New Roman",
+      "font_size_cn": "四号",
+      "font_size_pt": 14,
+      "bold": true,
+      "paragraph_alignment": "left",
+      "line_spacing_pt": 22
+    },
+    "heading_level_1": {
+      "font_zh": "宋体",
+      "font_en": "Times New Roman",
+      "font_size_cn": "四号",
+      "font_size_pt": 14,
+      "bold": true,
+      "paragraph_alignment": "left",
+      "line_spacing_pt": 22
+    },
+    "heading_level_2": {
+      "font_zh": "宋体",
+      "font_en": "Times New Roman",
+      "font_size_cn": "四号",
+      "font_size_pt": 14,
+      "bold": true,
+      "paragraph_alignment": "left",
+      "line_spacing_pt": 22
+    },
+    "heading_level_3": {
+      "font_zh": "宋体",
+      "font_en": "Times New Roman",
+      "font_size_cn": "小四",
+      "font_size_pt": 12,
+      "bold": true,
+      "paragraph_alignment": "left",
+      "line_spacing_pt": 22
+    },
+    "body_paragraph": {
+      "font_zh": "宋体",
+      "font_en": "Times New Roman",
+      "font_size_cn": "小四",
+      "font_size_pt": 12,
+      "bold": false,
+      "paragraph_alignment": "justify",
+      "first_line_indent_chars": 2,
+      "line_spacing_pt": 22
+    },
+    "table_text": {
+      "font_zh": "宋体",
+      "font_en": "Times New Roman",
+      "font_size_cn": "小四",
+      "font_size_pt": 12,
+      "bold": false,
+      "paragraph_alignment": "justify",
+      "line_spacing_pt": 22
+    },
+    "page": {
+      "margin_top_cm": 2.5,
+      "margin_bottom_cm": 2.0,
+      "margin_left_cm": 2.5,
+      "margin_right_cm": 2.0
+    }
+  }
+}

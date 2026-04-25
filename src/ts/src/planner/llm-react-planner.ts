@@ -25,6 +25,7 @@ import {
   isSchemaUnsupported,
   resolvePlannerModelConfig
 } from "./llm-planner.js";
+import { resolveRequestTimeoutControl } from "../llm/request-timeout-control.js";
 import { normalizeWriteOperationPayload } from "../tools/style-operation.js";
 
 const OPERATION_TYPES: ReadonlySet<OperationType> = new Set([
@@ -39,6 +40,9 @@ const OPERATION_TYPES: ReadonlySet<OperationType> = new Set([
   "set_strike",
   "set_highlight_color",
   "set_all_caps",
+  "set_page_layout",
+  "set_paragraph_spacing",
+  "set_paragraph_indent",
   "merge_paragraph",
   "split_paragraph"
 ]);
@@ -137,7 +141,11 @@ export class LlmReActPlanner implements ReActPlanner {
     const maxRetries = this.config.maxRetries ?? 0;
     let missingContentRetries = 0;
     let lastErr: unknown;
-    const timeoutControl = resolveReActTimeoutControl(this.config.timeoutMs, options.requestTimeoutMs);
+    const timeoutControl = resolveRequestTimeoutControl(this.config.timeoutMs, options.requestTimeoutMs, {
+      requestTimeoutCode: "E_REACT_PLANNER_REQUEST_TIMEOUT",
+      requestTimeoutMessage: "ReAct planner request timed out",
+      budgetTimeoutMessage: "Task budget exceeded while waiting for ReAct planner response."
+    });
 
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       if (timeoutControl.timeoutMs <= 0) {
@@ -162,7 +170,8 @@ export class LlmReActPlanner implements ReActPlanner {
               try {
                 return await this.requestDecisionJsonWithMode(prompt, systemPrompt, {
                   includeJsonSchema: false,
-                  allowSchemaFallback: false
+                  allowSchemaFallback: false,
+                  requestTimeoutMs: options.requestTimeoutMs
                 });
               } catch (fallbackErr) {
                 throw new AgentError({
@@ -234,36 +243,6 @@ export class LlmReActPlanner implements ReActPlanner {
   }
 }
 
-function resolveReActTimeoutControl(
-  configuredTimeoutMs: number | undefined,
-  requestTimeoutMs: number | undefined
-): {
-  timeoutMs: number;
-  budgetClipped: boolean;
-  toTimeoutError: (cause?: unknown) => AgentError;
-} {
-  const baseTimeoutMs = configuredTimeoutMs ?? 30000;
-  const budgetClipped =
-    typeof requestTimeoutMs === "number" && Number.isFinite(requestTimeoutMs) && requestTimeoutMs < baseTimeoutMs;
-  const timeoutMs =
-    typeof requestTimeoutMs === "number" && Number.isFinite(requestTimeoutMs)
-      ? Math.max(0, Math.min(baseTimeoutMs, requestTimeoutMs))
-      : baseTimeoutMs;
-  return {
-    timeoutMs,
-    budgetClipped,
-    toTimeoutError: (cause?: unknown) =>
-      new AgentError({
-        code: budgetClipped ? "E_TASK_TIMEOUT" : "E_REACT_PLANNER_REQUEST_TIMEOUT",
-        message: budgetClipped
-          ? "Task budget exceeded while waiting for ReAct planner response."
-          : `ReAct planner request timed out after ${timeoutMs}ms.`,
-        retryable: false,
-        cause
-      })
-  };
-}
-
 function buildDecisionRequestBody(
   config: PlannerModelConfig,
   prompt: string,
@@ -322,6 +301,15 @@ function buildPrompt(input: ReActTurnInput): string {
           set_strike: { is_strike: "boolean" },
           set_highlight_color: { highlight_color: "word-color-name or mapped hex alias" },
           set_all_caps: { is_all_caps: "boolean" },
+          set_page_layout: {
+            paper_size: "A4 | Letter",
+            margin_top_cm: "positive number",
+            margin_bottom_cm: "positive number",
+            margin_left_cm: "positive number",
+            margin_right_cm: "positive number"
+          },
+          set_paragraph_spacing: { before_pt: "number >= 0", after_pt: "number >= 0" },
+          set_paragraph_indent: { first_line_indent_pt: "number >= 0" },
           merge_paragraph: {},
           split_paragraph: { split_offset: "positive integer" }
         },
@@ -338,12 +326,13 @@ function buildPrompt(input: ReActTurnInput): string {
           "If step.toolName='write_operation', operation.id and operation.type are required.",
           "operation.id must be a non-empty string.",
           "operation.type must be one of allowedOperationTypes.",
-          "operation must include targetNodeId or targetSelector.",
+          "operation must include targetNodeId or targetSelector except set_page_layout.",
           "operation.targetNodeId must exactly match an existing document node id when present.",
           "operation.targetSelector.scope must be one of availableSelectorScopes when present.",
           "prefer one executable semantic step for batchable semantic writes",
           "runtime expands matched selectors into targetNodeId or targetNodeIds",
           "operation.payload must be a JSON object.",
+          "set_page_layout is document-level and must not invent a node target.",
           "every write_operation must be semantically executable against the provided document structure",
           "never use placeholder ids like 'placeholder', 'unused', or 'target'",
           "never emit an empty payload for style-changing writes",
@@ -395,6 +384,15 @@ function buildCorrectionPrompt(
           set_strike: { is_strike: "boolean" },
           set_highlight_color: { highlight_color: "word-color-name or mapped hex alias" },
           set_all_caps: { is_all_caps: "boolean" },
+          set_page_layout: {
+            paper_size: "A4 | Letter",
+            margin_top_cm: "positive number",
+            margin_bottom_cm: "positive number",
+            margin_left_cm: "positive number",
+            margin_right_cm: "positive number"
+          },
+          set_paragraph_spacing: { before_pt: "number >= 0", after_pt: "number >= 0" },
+          set_paragraph_indent: { first_line_indent_pt: "number >= 0" },
           merge_paragraph: {},
           split_paragraph: { split_offset: "positive integer" }
         },
@@ -678,7 +676,7 @@ function parseOperation(op: unknown, targetContext?: TargetContext): Operation {
   const targetNodeIds = normalizeTargetNodeIds(raw.targetNodeIds, raw.target_node_ids);
   const selectorInput = firstDefined(raw.targetSelector, raw.target_selector, raw.selector);
   const targetSelector = selectorInput === undefined ? undefined : parseTargetSelector(selectorInput);
-  if (!targetNodeId && !targetNodeIds?.length && !targetSelector) {
+  if (operationType !== "set_page_layout" && !targetNodeId && !targetNodeIds?.length && !targetSelector) {
     throw invalidStep("operation.targetNodeId or operation.targetSelector is required");
   }
   if (targetNodeId && isPlaceholderTargetId(targetNodeId)) {
@@ -897,6 +895,30 @@ function validateExecutablePayload(operationType: OperationType, payload: unknow
   if (operationType === "set_all_caps" && !hasBoolean(payload, ["is_all_caps", "isAllCaps"])) {
     throw invalidStep("set_all_caps payload must include is_all_caps");
   }
+  if (
+    operationType === "set_page_layout" &&
+    !hasNonEmptyString(payload, ["paper_size", "paperSize"]) &&
+    !hasPositiveNumber(payload, ["margin_top_cm", "marginTopCm"]) &&
+    !hasPositiveNumber(payload, ["margin_bottom_cm", "marginBottomCm"]) &&
+    !hasPositiveNumber(payload, ["margin_left_cm", "marginLeftCm"]) &&
+    !hasPositiveNumber(payload, ["margin_right_cm", "marginRightCm"])
+  ) {
+    throw invalidStep("set_page_layout payload must include paper_size or margin_*_cm");
+  }
+  if (
+    operationType === "set_paragraph_spacing" &&
+    !hasPositiveNumber(payload, ["before_pt", "beforePt", "space_before_pt", "spaceBeforePt"]) &&
+    !hasPositiveNumber(payload, ["after_pt", "afterPt", "space_after_pt", "spaceAfterPt"])
+  ) {
+    throw invalidStep("set_paragraph_spacing payload must include before_pt or after_pt");
+  }
+  if (
+    operationType === "set_paragraph_indent" &&
+    !hasNonNegativeNumber(payload, ["first_line_indent_pt", "firstLineIndentPt"]) &&
+    !hasPositiveNumber(payload, ["first_line_indent_chars", "firstLineIndentChars"])
+  ) {
+    throw invalidStep("set_paragraph_indent payload must include first_line_indent_pt");
+  }
 }
 
 function isPlaceholderTargetId(value: string): boolean {
@@ -1069,6 +1091,27 @@ function isCanonicalPayload(operationType: OperationType, payload: Record<string
   if (operationType === "set_all_caps") {
     return typeof payload.is_all_caps === "boolean" || typeof payload.isAllCaps === "boolean";
   }
+  if (operationType === "set_page_layout") {
+    return (
+      hasNonEmptyString(payload, ["paper_size", "paperSize"]) ||
+      hasPositiveNumber(payload, ["margin_top_cm", "marginTopCm"]) ||
+      hasPositiveNumber(payload, ["margin_bottom_cm", "marginBottomCm"]) ||
+      hasPositiveNumber(payload, ["margin_left_cm", "marginLeftCm"]) ||
+      hasPositiveNumber(payload, ["margin_right_cm", "marginRightCm"])
+    );
+  }
+  if (operationType === "set_paragraph_spacing") {
+    return (
+      hasPositiveNumber(payload, ["before_pt", "beforePt", "space_before_pt", "spaceBeforePt"]) ||
+      hasPositiveNumber(payload, ["after_pt", "afterPt", "space_after_pt", "spaceAfterPt"])
+    );
+  }
+  if (operationType === "set_paragraph_indent") {
+    return (
+      hasNonNegativeNumber(payload, ["first_line_indent_pt", "firstLineIndentPt"]) ||
+      hasPositiveNumber(payload, ["first_line_indent_chars", "firstLineIndentChars"])
+    );
+  }
   return false;
 }
 
@@ -1078,6 +1121,10 @@ function hasNonEmptyString(payload: Record<string, unknown>, keys: string[]): bo
 
 function hasPositiveNumber(payload: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => isNonNegativeNumber(payload[key]) && Number(payload[key]) > 0);
+}
+
+function hasNonNegativeNumber(payload: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((key) => isNonNegativeNumber(payload[key]));
 }
 
 function hasBoolean(payload: Record<string, unknown>, keys: string[]): boolean {

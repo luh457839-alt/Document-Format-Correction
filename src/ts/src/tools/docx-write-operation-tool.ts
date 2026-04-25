@@ -53,6 +53,21 @@ export class DocxWriteOperationTool implements Tool {
 
   async execute(input: ToolExecutionInput): Promise<ToolExecutionOutput> {
     const op = input.operation!;
+    const normalizedStyle = normalizeWriteOperationPayload(op);
+    if (op.type === "set_page_layout") {
+      const next = structuredClone(input.doc);
+      next.metadata = { ...(next.metadata ?? {}), page_layout: normalizedStyle };
+      const outputDocxPath = readOutputDocxPath(next);
+      if (input.context.dryRun) {
+        return {
+          doc: next,
+          summary: "Dry-run: set_page_layout prepared for document.",
+          rollbackToken: `rb_${input.context.stepId}`
+        };
+      }
+      return await this.writeDocument(next, outputDocxPath!, op.type, [], input.context.stepId);
+    }
+
     const targetNodeIds = readTargetNodeIds(op);
     if (targetNodeIds.length === 0) {
       throw new AgentError({
@@ -61,7 +76,6 @@ export class DocxWriteOperationTool implements Tool {
         retryable: false
       });
     }
-    const normalizedStyle = normalizeWriteOperationPayload(op);
     const next = structuredClone(input.doc);
     for (const targetNodeId of targetNodeIds) {
       const target = next.nodes.find((n) => n.id === targetNodeId);
@@ -74,8 +88,6 @@ export class DocxWriteOperationTool implements Tool {
       }
       target.style = { ...(target.style ?? {}), ...normalizedStyle, operation: op.type };
     }
-    const outputDocxPath = readOutputDocxPath(next);
-
     if (input.context.dryRun) {
       return {
         doc: next,
@@ -84,12 +96,23 @@ export class DocxWriteOperationTool implements Tool {
       };
     }
 
+    const outputDocxPath = readOutputDocxPath(next);
+    return await this.writeDocument(next, outputDocxPath!, op.type, targetNodeIds, input.context.stepId);
+  }
+
+  private async writeDocument(
+    doc: DocumentIR,
+    outputDocxPath: string,
+    operationType: string,
+    targetNodeIds: string[],
+    stepId: string
+  ): Promise<ToolExecutionOutput> {
     const snapshot = await createFileSnapshot(outputDocxPath!);
 
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "ts-agent-docx-write-"));
     const inputJsonPath = path.join(tempDir, "doc-ir.json");
     try {
-      await writeFile(inputJsonPath, JSON.stringify(next), "utf8");
+      await writeFile(inputJsonPath, JSON.stringify(doc), "utf8");
       await execFileAsync(this.pythonBin, [
         this.scriptPath,
         "--input-json",
@@ -114,11 +137,13 @@ export class DocxWriteOperationTool implements Tool {
 
     const rollbackToken = encodeRollbackToken(snapshot);
     return {
-      doc: next,
+      doc,
       summary:
         targetNodeIds.length === 1
-          ? `Applied ${op.type} to ${targetNodeIds[0]}; wrote ${outputDocxPath}.`
-          : `Applied ${op.type} to ${targetNodeIds.length} nodes; wrote ${outputDocxPath}.`,
+          ? `Applied ${operationType} to ${targetNodeIds[0]}; wrote ${outputDocxPath}.`
+          : targetNodeIds.length > 1
+            ? `Applied ${operationType} to ${targetNodeIds.length} nodes; wrote ${outputDocxPath}.`
+            : `Applied ${operationType} to document; wrote ${outputDocxPath}.`,
       rollbackToken,
       artifacts: { outputDocxPath }
     };

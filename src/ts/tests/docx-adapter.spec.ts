@@ -3,6 +3,7 @@ import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import JSZip from "jszip";
 import type { DocumentIR } from "../src/core/types.js";
 import { PythonDocxAdapter } from "../src/adapters/docx/index.js";
 
@@ -110,6 +111,20 @@ async function createFakeRunnerScript(dir: string): Promise<string> {
   return scriptPath;
 }
 
+async function writeMinimalDocx(target: string, text: string): Promise<void> {
+  const zip = new JSZip();
+  zip.file(
+    "word/document.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>${text}</w:t></w:r></w:p>
+  </w:body>
+</w:document>`
+  );
+  await writeFile(target, await zip.generateAsync({ type: "nodebuffer" }));
+}
+
 describe("python docx adapter", () => {
   afterEach(async () => {
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -196,6 +211,41 @@ describe("python docx adapter", () => {
     const loaded = await adapter.load(path.join(dir, "ignored.docx"));
     expect(loaded.nodes[0]?.text).toBe("runner text");
     expect(loaded.nodes[0]?.style).toMatchObject({ font_name: "SimSun" });
+  });
+
+  it("falls back to the native parser for runner docx parse failures", async () => {
+    const dir = await makeTempDir();
+    const docxPath = path.join(dir, "sample.docx");
+    const runnerPath = path.join(dir, "failing-runner.cjs");
+    await writeMinimalDocx(docxPath, "fallback text");
+    await writeFile(
+      runnerPath,
+      [
+        "const fs = require('fs');",
+        "const args = process.argv.slice(2);",
+        "const outputPath = args[args.indexOf('--output-json') + 1];",
+        "fs.writeFileSync(outputPath, JSON.stringify({",
+        "  ok: false,",
+        "  error: {",
+        "    code: 'E_PYTHON_TOOL_START_FAILED',",
+        "    message: 'python-docx failed to open DOCX package: Package not found at sample.docx',",
+        "    retryable: false",
+        "  }",
+        "}, null, 2), 'utf8');",
+        "process.exit(1);"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const adapter = new PythonDocxAdapter({
+      mode: "runner",
+      allowFallback: false,
+      pythonCommand: "node",
+      toolRunnerPath: runnerPath
+    });
+
+    const loaded = await adapter.load(docxPath);
+    expect(loaded.nodes[0]?.text).toBe("fallback text");
   });
 
   it("requires parseScriptPath in explicit legacy mode", async () => {

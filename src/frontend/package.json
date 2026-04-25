@@ -1,7 +1,7 @@
 {
   "name": "document-format-correction-frontend",
   "private": true,
-  "version": "0.2.0",
+  "version": "3.0.0",
   "description": "Desktop frontend for the document format correction agent",
   "type": "module",
   "scripts": {

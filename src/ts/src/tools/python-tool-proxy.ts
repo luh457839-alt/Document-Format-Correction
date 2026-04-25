@@ -102,6 +102,10 @@ function validateWriteOperationInput(input: ToolExecutionInput): void {
       retryable: false
     });
   }
+  if (input.operation.type === "set_page_layout") {
+    normalizeWriteOperationPayload(input.operation);
+    return;
+  }
   if (!input.operation.targetNodeId && !input.operation.targetNodeIds?.length) {
     throw new AgentError({
       code: "E_INVALID_OPERATION",

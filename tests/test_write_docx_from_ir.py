@@ -212,6 +212,61 @@ class WriteDocxFromIrTest(unittest.TestCase):
             self.assertEqual(multiple.paragraphs[0].paragraph_format.line_spacing, 1.5)
             self.assertEqual(exact.paragraphs[0].paragraph_format.line_spacing.pt, 20.0)
 
+    def test_page_spacing_and_first_line_indent_fields_are_written(self) -> None:
+        docx = self._import_docx()
+        write_docx_from_ir = self._import_writer()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            output = tmp_path / "output.docx"
+            payload_path = tmp_path / "payload.json"
+
+            payload_path.write_text(
+                json.dumps(
+                    {
+                        "id": "doc1",
+                        "version": "v1",
+                        "nodes": [
+                            {
+                                "id": "n1",
+                                "text": "hello",
+                                "style": {
+                                    "space_before_pt": 6,
+                                    "space_after_pt": 3,
+                                    "first_line_indent_pt": 24,
+                                },
+                            }
+                        ],
+                        "metadata": {
+                            "page_layout": {
+                                "paper_size": "A4",
+                                "margin_top_cm": 3.7,
+                                "margin_bottom_cm": 3.5,
+                                "margin_left_cm": 2.8,
+                                "margin_right_cm": 2.6,
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            write_docx_from_ir(payload_path, output)
+
+            result = docx.Document(output)
+            section = result.sections[0]
+            paragraph_format = result.paragraphs[0].paragraph_format
+            self.assertAlmostEqual(section.page_width.cm, 21.0, places=1)
+            self.assertAlmostEqual(section.page_height.cm, 29.7, places=1)
+            self.assertAlmostEqual(section.top_margin.cm, 3.7, places=1)
+            self.assertAlmostEqual(section.bottom_margin.cm, 3.5, places=1)
+            self.assertAlmostEqual(section.left_margin.cm, 2.8, places=1)
+            self.assertAlmostEqual(section.right_margin.cm, 2.6, places=1)
+            self.assertEqual(paragraph_format.space_before.pt, 6.0)
+            self.assertEqual(paragraph_format.space_after.pt, 3.0)
+            self.assertEqual(paragraph_format.first_line_indent.pt, 24.0)
+
     def test_in_place_write_requires_source_docx_for_docx_mapped_nodes(self) -> None:
         self._import_docx()
         write_docx_from_ir = self._import_writer()
@@ -364,6 +419,90 @@ class WriteDocxFromIrTest(unittest.TestCase):
             result = docx.Document(output)
             written_run = result.paragraphs[0].runs[0]
             self.assertEqual(written_run.font.highlight_color, docx.enum.text.WD_COLOR_INDEX.GREEN)
+
+    def test_rebuilds_split_runs_from_source_run_ids(self) -> None:
+        docx = self._import_docx()
+        write_docx_from_ir = self._import_writer()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            source = tmp_path / "source.docx"
+            output = tmp_path / "output.docx"
+            payload_path = tmp_path / "payload.json"
+
+            document = docx.Document()
+            paragraph = document.add_paragraph()
+            run = paragraph.add_run("这是NLP2025报告")
+            run.font.name = "FangSong_GB2312"
+            run.font.size = docx.shared.Pt(16)
+            run.bold = True
+            document.save(source)
+
+            payload_path.write_text(
+                json.dumps(
+                    {
+                        "id": "doc1",
+                        "version": "v1",
+                        "nodes": [
+                            {
+                                "id": "p_0_r_0__seg_0",
+                                "sourceRunId": "p_0_r_0",
+                                "text": "这是",
+                                "style": {
+                                    "font_name": "FangSong_GB2312",
+                                    "font_size_pt": 16,
+                                    "is_bold": True,
+                                },
+                            },
+                            {
+                                "id": "p_0_r_0__seg_1",
+                                "sourceRunId": "p_0_r_0",
+                                "text": "NLP2025",
+                                "style": {
+                                    "font_name": "Times New Roman",
+                                    "font_size_pt": 16,
+                                    "is_bold": True,
+                                },
+                            },
+                            {
+                                "id": "p_0_r_0__seg_2",
+                                "sourceRunId": "p_0_r_0",
+                                "text": "报告",
+                                "style": {
+                                    "font_name": "FangSong_GB2312",
+                                    "font_size_pt": 16,
+                                    "is_bold": True,
+                                },
+                            },
+                        ],
+                        "metadata": {
+                            "inputDocxPath": str(source),
+                            "structureIndex": {
+                                "paragraphs": [
+                                    {
+                                        "id": "p_0",
+                                        "runNodeIds": [
+                                            "p_0_r_0__seg_0",
+                                            "p_0_r_0__seg_1",
+                                            "p_0_r_0__seg_2",
+                                        ],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            write_docx_from_ir(payload_path, output)
+
+            result = docx.Document(output)
+            paragraph = result.paragraphs[0]
+            self.assertEqual([run.text for run in paragraph.runs], ["这是", "NLP2025", "报告"])
+            self.assertEqual([run.font.name for run in paragraph.runs], ["FangSong_GB2312", "Times New Roman", "FangSong_GB2312"])
+            self.assertEqual([run.bold for run in paragraph.runs], [True, True, True])
 
     @staticmethod
     def _import_docx():

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from src.python.core.model_config import build_ts_agent_env, load_model_config
+from src.python.core.model_config import collect_model_config_warnings, build_ts_agent_env, load_model_config
 
 
 class ModelConfigCompatibilityTest(unittest.TestCase):
@@ -103,6 +103,41 @@ class ModelConfigCompatibilityTest(unittest.TestCase):
             self.assertEqual(env["TS_AGENT_MAX_TURNS"], "32")
             self.assertEqual(env["TS_AGENT_SYNC_REQUEST_TIMEOUT_MS"], "420000")
             self.assertEqual(env["TS_AGENT_PLANNER_USE_JSON_SCHEMA"], "true")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_collect_model_config_warnings_reports_mismatched_hosts_and_non_v1_urls(self) -> None:
+        root = Path(".tmp") / f"model-config-{uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "chat": {
+                            "base_url": "https://chat.example/v1",
+                            "api_key": "sk-chat",
+                            "model": "gpt",
+                        },
+                        "planner": {
+                            "base_url": "https://planner.example/api",
+                            "api_key": "sk-planner",
+                            "model": "gpt",
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = load_model_config(config_path)
+            warnings = collect_model_config_warnings(loaded)
+
+            codes = {warning["code"] for warning in warnings}
+            self.assertIn("planner_chat_host_mismatch", codes)
+            self.assertIn("base_url_not_openai_compatible", codes)
+            self.assertNotIn("sk-planner", json.dumps(warnings, ensure_ascii=False))
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

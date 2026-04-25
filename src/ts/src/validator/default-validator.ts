@@ -31,7 +31,12 @@ export class DefaultValidator implements Validator {
       if (!step.operation.payload || typeof step.operation.payload !== "object") {
         throw invalidPlan(`write_operation step '${step.id}' requires operation.payload.`);
       }
-      if (!step.operation.targetNodeId && !step.operation.targetNodeIds?.length && !step.operation.targetSelector) {
+      if (
+        step.operation.type !== "set_page_layout" &&
+        !step.operation.targetNodeId &&
+        !step.operation.targetNodeIds?.length &&
+        !step.operation.targetSelector
+      ) {
         throw invalidPlan(
           `write_operation step '${step.id}' requires operation.targetNodeId or operation.targetNodeIds or operation.targetSelector.`
         );
@@ -124,6 +129,27 @@ function isPayloadSemanticallyEmpty(type: string, payload: Record<string, unknow
   if (type === "set_all_caps") {
     return !hasBoolean(payload, ["is_all_caps", "isAllCaps"]);
   }
+  if (type === "set_page_layout") {
+    return (
+      !hasPaperSize(payload, ["paper_size", "paperSize"]) &&
+      !hasPositiveNumber(payload, ["margin_top_cm", "marginTopCm"]) &&
+      !hasPositiveNumber(payload, ["margin_bottom_cm", "marginBottomCm"]) &&
+      !hasPositiveNumber(payload, ["margin_left_cm", "marginLeftCm"]) &&
+      !hasPositiveNumber(payload, ["margin_right_cm", "marginRightCm"])
+    );
+  }
+  if (type === "set_paragraph_spacing") {
+    return (
+      !hasPositiveNumber(payload, ["before_pt", "beforePt", "space_before_pt", "spaceBeforePt"]) &&
+      !hasPositiveNumber(payload, ["after_pt", "afterPt", "space_after_pt", "spaceAfterPt"])
+    );
+  }
+  if (type === "set_paragraph_indent") {
+    return (
+      !hasZeroOrPositiveNumber(payload, ["first_line_indent_pt", "firstLineIndentPt"]) &&
+      !hasPositiveNumber(payload, ["first_line_indent_chars", "firstLineIndentChars"])
+    );
+  }
   return Object.keys(payload).length === 0;
 }
 
@@ -133,6 +159,17 @@ function hasNonEmptyString(payload: Record<string, unknown>, keys: string[]): bo
 
 function hasPositiveNumber(payload: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => typeof payload[key] === "number" && Number.isFinite(payload[key]) && payload[key] > 0);
+}
+
+function hasZeroOrPositiveNumber(payload: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((key) => typeof payload[key] === "number" && Number.isFinite(payload[key]) && payload[key] >= 0);
+}
+
+function hasPaperSize(payload: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((key) => {
+    const value = payload[key];
+    return typeof value === "string" && ["a4", "letter"].includes(value.trim().toLowerCase());
+  });
 }
 
 function hasBoolean(payload: Record<string, unknown>, keys: string[]): boolean {

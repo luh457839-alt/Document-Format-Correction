@@ -10,6 +10,8 @@ import { AgentSessionService } from "../src/runtime/session-service.js";
 import { SqliteAgentStateStore } from "../src/runtime/state/sqlite-agent-state-store.js";
 
 const tempDirs: string[] = [];
+const originalPythonBin = process.env.TS_AGENT_PYTHON_BIN;
+const originalPythonToolRunner = process.env.TS_AGENT_PYTHON_TOOL_RUNNER;
 
 async function makeTempDir(): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "ts-agent-cli-"));
@@ -55,8 +57,47 @@ async function writeStyledRunDocx(
   await writeFile(target, data);
 }
 
+async function writePythonObservationFailureRunner(
+  target: string,
+  error: { code: string; message: string; retryable: boolean }
+): Promise<void> {
+  await writeFile(
+    target,
+    [
+      "const fs = require('fs');",
+      "const args = process.argv.slice(2);",
+      "const outputPath = args[args.indexOf('--output-json') + 1];",
+      "fs.writeFileSync(outputPath, JSON.stringify({",
+      "  ok: false,",
+      `  error: ${JSON.stringify(error)}`,
+      "}, null, 2), 'utf8');",
+      "process.exit(1);"
+    ].join("\n"),
+    "utf8"
+  );
+}
+
+function setPythonObservationRunner(runnerPath: string): void {
+  process.env.TS_AGENT_PYTHON_BIN = "node";
+  process.env.TS_AGENT_PYTHON_TOOL_RUNNER = runnerPath;
+}
+
+function restorePythonObservationRunner(): void {
+  if (originalPythonBin === undefined) {
+    delete process.env.TS_AGENT_PYTHON_BIN;
+  } else {
+    process.env.TS_AGENT_PYTHON_BIN = originalPythonBin;
+  }
+  if (originalPythonToolRunner === undefined) {
+    delete process.env.TS_AGENT_PYTHON_TOOL_RUNNER;
+  } else {
+    process.env.TS_AGENT_PYTHON_TOOL_RUNNER = originalPythonToolRunner;
+  }
+}
+
 describe("runtime cli", () => {
   afterEach(async () => {
+    restorePythonObservationRunner();
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
@@ -335,6 +376,52 @@ describe("runtime cli", () => {
     expect(output.finalDoc?.nodes?.[0]?.text).toContain("styled-text");
     expect(output.finalDoc?.nodes?.[0]?.style?.font_size_pt).toBe(11);
     expect(output.finalDoc?.nodes?.[0]?.style?.operation).toBe("set_font");
+  });
+
+  it("hydrates document nodes when python observation rejects the docx package", async () => {
+    const dir = await makeTempDir();
+    const inputPath = path.join(dir, "in-fallback-hydrate.json");
+    const outputPath = path.join(dir, "out-fallback-hydrate.json");
+    const auditDbPath = path.join(dir, "audit-fallback-hydrate.db");
+    const sourceDocxPath = path.join(dir, "source.docx");
+    const runnerPath = path.join(dir, "runner.cjs");
+    await writeSimpleDocx(sourceDocxPath, "fallback-from-docx");
+    await writePythonObservationFailureRunner(runnerPath, {
+      code: "E_PYTHON_TOOL_START_FAILED",
+      message: "python-docx failed to open DOCX package: Package not found at source.docx",
+      retryable: false
+    });
+    setPythonObservationRunner(runnerPath);
+
+    await writeFile(
+      inputPath,
+      JSON.stringify(
+        {
+          goal: "hydrate doc",
+          document: {
+            id: "doc-hydrate",
+            version: "v1",
+            nodes: [{ id: "placeholder", text: "placeholder" }],
+            metadata: { inputDocxPath: sourceDocxPath }
+          },
+          runtimeOptions: {
+            auditDbPath,
+            dryRun: true
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const code = await runCli(["--input-json", inputPath, "--output-json", outputPath]);
+    expect(code).toBe(0);
+
+    const output = JSON.parse(await readFile(outputPath, "utf8")) as {
+      finalDoc?: { nodes?: Array<{ id: string; text: string }> };
+    };
+    expect(output.finalDoc?.nodes?.some((n) => n.text.includes("fallback-from-docx"))).toBe(true);
   });
 
   it("writes structured turn-decision errors for submit_turn commands", async () => {

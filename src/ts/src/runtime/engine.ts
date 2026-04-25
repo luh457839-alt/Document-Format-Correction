@@ -1,6 +1,7 @@
 import { AgentError, asAppError } from "../core/errors.js";
+import { createDocumentExecutionFacade, type DocumentExecutionFacade } from "../document-execution/facade.js";
+import { createDocumentToolingFacade, type DocumentToolingFacade } from "../document-tooling/facade.js";
 import { summarizeChangeSet } from "../diff/summary.js";
-import { DefaultExecutor } from "../executor/default-executor.js";
 import {
   LlmPlanner,
   resolvePlannerRuntimeMode,
@@ -8,12 +9,6 @@ import {
 } from "../planner/llm-planner.js";
 import { LlmReActPlanner } from "../planner/llm-react-planner.js";
 import { WriteOperationTool } from "../tools/mock-tools.js";
-import { materializeDocumentWithPython } from "../tools/python-tool-client.js";
-import {
-  buildDocxObservationTool,
-  buildInspectDocumentTool,
-  buildWriteOperationTool
-} from "../tools/python-tool-proxy.js";
 import { InMemoryToolRegistry } from "../tools/tool-registry.js";
 import { DefaultValidator } from "../validator/default-validator.js";
 import type {
@@ -67,6 +62,8 @@ export interface RuntimeDeps {
   pythonBin?: string;
   pythonToolRunnerPath?: string;
   pythonToolTimeoutMs?: number;
+  documentTooling?: DocumentToolingFacade;
+  executionFacade?: DocumentExecutionFacade;
 }
 
 export class AgentRuntime {
@@ -433,29 +430,20 @@ export function createMvpRuntime(deps: RuntimeDeps = {}): AgentRuntime {
     deps.taskTimeoutMs !== undefined ? deps.taskTimeoutMs : runtimeTuning.taskTimeoutMs ?? null;
   const pythonToolTimeoutMs =
     deps.pythonToolTimeoutMs ?? runtimeTuning.pythonToolTimeoutMs ?? defaultTimeoutMs;
+  const documentTooling =
+    deps.documentTooling ??
+    createDocumentToolingFacade({
+      pythonBin: deps.pythonBin,
+      runnerPath: deps.pythonToolRunnerPath,
+      timeoutMs: pythonToolTimeoutMs
+    });
   const registry = new InMemoryToolRegistry();
-  registry.register(
-    buildInspectDocumentTool({
-      pythonBin: deps.pythonBin,
-      runnerPath: deps.pythonToolRunnerPath,
-      timeoutMs: pythonToolTimeoutMs
-    })
-  );
-  registry.register(
-    buildDocxObservationTool({
-      pythonBin: deps.pythonBin,
-      runnerPath: deps.pythonToolRunnerPath,
-      timeoutMs: pythonToolTimeoutMs
-    })
-  );
+  registry.register(documentTooling.createInspectDocumentTool());
+  registry.register(documentTooling.createDocxObservationTool());
   registry.register(
     deps.useMockWriteTool
       ? new WriteOperationTool()
-      : buildWriteOperationTool({
-          pythonBin: deps.pythonBin,
-          runnerPath: deps.pythonToolRunnerPath,
-          timeoutMs: pythonToolTimeoutMs
-        })
+      : documentTooling.createWriteOperationTool()
   );
 
   const defaultMode: RuntimeMode =
@@ -467,18 +455,19 @@ export function createMvpRuntime(deps: RuntimeDeps = {}): AgentRuntime {
     deps.reactPlanner ??
     (defaultMode === "react_loop" ? new LlmReActPlanner({ config: deps.plannerConfig }) : undefined);
 
-  const validator = deps.validator ?? new DefaultValidator();
-  const executor =
-    deps.executor ??
-    new DefaultExecutor({
+  const executionFacade =
+    deps.executionFacade ??
+    createDocumentExecutionFacade({
       toolRegistry: registry,
+      executor: deps.executor,
+      validator: deps.validator ?? new DefaultValidator(),
       riskPolicy: new DefaultRiskPolicy()
     });
   const auditStore = deps.auditStore ?? new SqliteTaskAuditStore(deps.auditConfig);
   return new AgentRuntime(
     planner,
-    executor,
-    validator,
+    executionFacade.executor,
+    executionFacade.validator,
     auditStore,
     reactPlanner,
     defaultMode,
@@ -487,12 +476,7 @@ export function createMvpRuntime(deps: RuntimeDeps = {}): AgentRuntime {
     taskTimeoutMs,
     deps.useMockWriteTool
       ? undefined
-      : async (doc: DocumentIR) =>
-          await materializeDocumentWithPython(doc, {
-            pythonBin: deps.pythonBin,
-            runnerPath: deps.pythonToolRunnerPath,
-            timeoutMs: pythonToolTimeoutMs
-          })
+      : async (doc: DocumentIR) => await documentTooling.materializeDocument(doc)
   );
 }
 

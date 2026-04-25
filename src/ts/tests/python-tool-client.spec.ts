@@ -221,4 +221,112 @@ describe("python tool client", () => {
     expect(state.document_meta.total_paragraphs).toBe(1);
     expect(state.nodes[0]?.node_type).toBe("paragraph");
   });
+
+  it("falls back to native parser when startup failure indicates docx parse rejection", async () => {
+    const dir = await makeTempDir();
+    const runnerPath = path.join(dir, "runner.cjs");
+    const docxPath = path.join(dir, "sample.docx");
+    await writeMinimalDocx(docxPath);
+    await writeFile(
+      runnerPath,
+      [
+        "const fs = require('fs');",
+        "const args = process.argv.slice(2);",
+        "const outputPath = args[args.indexOf('--output-json') + 1];",
+        "fs.writeFileSync(outputPath, JSON.stringify({",
+        "  ok: false,",
+        "  error: {",
+        "    code: 'E_PYTHON_TOOL_START_FAILED',",
+        "    message: 'python-docx failed to open DOCX package: Package not found at sample.docx',",
+        "    retryable: false",
+        "  }",
+        "}, null, 2), 'utf8');",
+        "process.exit(1);"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const state = await observeDocxStateWithPython(docxPath, {
+      pythonBin: "node",
+      runnerPath
+    });
+
+    expect(state.document_meta.total_paragraphs).toBe(1);
+    expect(state.nodes[0]?.node_type).toBe("paragraph");
+  });
+
+  it("does not fall back for runner environment startup failures", async () => {
+    const dir = await makeTempDir();
+    const runnerPath = path.join(dir, "runner.cjs");
+    const docxPath = path.join(dir, "sample.docx");
+    await writeMinimalDocx(docxPath);
+    await writeFile(
+      runnerPath,
+      [
+        "const fs = require('fs');",
+        "const args = process.argv.slice(2);",
+        "const outputPath = args[args.indexOf('--output-json') + 1];",
+        "fs.writeFileSync(outputPath, JSON.stringify({",
+        "  ok: false,",
+        "  error: {",
+        "    code: 'E_PYTHON_TOOL_START_FAILED',",
+        "    message: \"Python tool runner environment failed: ModuleNotFoundError: No module named 'src'\",",
+        "    retryable: false",
+        "  }",
+        "}, null, 2), 'utf8');",
+        "process.exit(1);"
+      ].join("\n"),
+      "utf8"
+    );
+
+    await expect(
+      observeDocxStateWithPython(docxPath, {
+        pythonBin: "node",
+        runnerPath
+      })
+    ).rejects.toMatchObject({
+      info: {
+        code: "E_PYTHON_TOOL_START_FAILED"
+      }
+    } satisfies Partial<AgentError>);
+  });
+
+  it("falls back to the native parser when python observation metadata misses the shared schema", async () => {
+    const dir = await makeTempDir();
+    const runnerPath = path.join(dir, "runner.cjs");
+    const docxPath = path.join(dir, "sample.docx");
+    await writeMinimalDocx(docxPath);
+    await writeFile(
+      runnerPath,
+      [
+        "const fs = require('fs');",
+        "const args = process.argv.slice(2);",
+        "const outputPath = args[args.indexOf('--output-json') + 1];",
+        "fs.writeFileSync(outputPath, JSON.stringify({",
+        "  ok: true,",
+        "  result: {",
+        "    doc: {",
+        "      id: 'doc1',",
+        "      version: 'v1',",
+        "      nodes: [],",
+        "      metadata: {",
+        "        docxObservation: { document_meta: { total_paragraphs: 1 } }",
+        "      }",
+        "    },",
+        "    summary: 'ok'",
+        "  }",
+        "}, null, 2), 'utf8');",
+        "process.exit(0);"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const state = await observeDocxStateWithPython(docxPath, {
+      pythonBin: "node",
+      runnerPath
+    });
+
+    expect(state.document_meta.total_paragraphs).toBe(1);
+    expect(state.nodes[0]?.node_type).toBe("paragraph");
+  });
 });

@@ -1,3 +1,9 @@
+from .template_bridge import (
+    TemplateBridgeError,
+    TemplateBridgeOptions,
+    TemplateBridgeTimeout,
+    run_template_job,
+)
 from .ts_agent_bridge import (
     TsAgentBridgeError,
     TsAgentBridgeOptions,
@@ -13,6 +19,10 @@ from .ts_agent_bridge import (
 )
 
 __all__ = [
+    "run_template_job",
+    "TemplateBridgeError",
+    "TemplateBridgeTimeout",
+    "TemplateBridgeOptions",
     "create_session",
     "list_sessions",
     "submit_agent_turn",

@@ -28,6 +28,7 @@ export const SettingsDrawer: React.FC = () => {
   const [localSettings, setLocalSettings] = useState<UserSettings>(settings);
   const [isSaving, setIsSaving] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const configWarnings = buildConfigWarnings(localSettings);
 
   useEffect(() => {
     if (!isSettingsOpen) {
@@ -165,6 +166,14 @@ export const SettingsDrawer: React.FC = () => {
               <h3 className="text-sm font-semibold text-white">规划模型</h3>
               <p className="mt-1 text-xs text-gray-400">用于 Planner / ReAct 阶段。</p>
             </div>
+
+            {configWarnings.length > 0 && (
+              <div className="rounded-xl border border-amber-700 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
+                {configWarnings.map((warning) => (
+                  <p key={warning}>{warning}</p>
+                ))}
+              </div>
+            )}
 
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-300">
@@ -349,3 +358,42 @@ export const SettingsDrawer: React.FC = () => {
     </>
   );
 };
+
+function buildConfigWarnings(settings: UserSettings): string[] {
+  const warnings: string[] = [];
+  const chatHost = readUrlHost(settings.apiBaseUrl);
+  const plannerHost = readUrlHost(settings.plannerBaseUrl);
+  if (chatHost && plannerHost && chatHost !== plannerHost) {
+    warnings.push(`Planner host (${plannerHost}) 与 Chat host (${chatHost}) 不一致，模板分类会使用 Planner 地址。`);
+  }
+  for (const [label, value] of [
+    ['Chat Base URL', settings.apiBaseUrl],
+    ['Planner Base URL', settings.plannerBaseUrl],
+  ] as const) {
+    const url = readUrl(value);
+    if (!url) {
+      warnings.push(`${label} 不是有效的 http(s) 地址。`);
+      continue;
+    }
+    if (!url.pathname.replace(/\/+$/, '').endsWith('/v1')) {
+      warnings.push(`${label} 看起来不是 OpenAI-compatible /v1 端点。`);
+    }
+  }
+  return warnings;
+}
+
+function readUrlHost(value: string): string {
+  return readUrl(value)?.host ?? '';
+}
+
+function readUrl(value: string): URL | null {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null;
+    }
+    return url;
+  } catch {
+    return null;
+  }
+}

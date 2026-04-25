@@ -18,6 +18,9 @@ export type OperationType =
   | "set_strike"
   | "set_highlight_color"
   | "set_all_caps"
+  | "set_page_layout"
+  | "set_paragraph_spacing"
+  | "set_paragraph_indent"
   | "merge_paragraph"
   | "split_paragraph";
 
@@ -60,6 +63,7 @@ export interface DocumentNode {
   id: string;
   text: string;
   style?: DocumentNodeStyle;
+  sourceRunId?: string;
 }
 
 export type NodeSelectorScope = "body" | "heading" | "list_item" | "all_text" | "paragraph_ids";
@@ -95,6 +99,9 @@ export interface DocumentNodeStyle extends Record<string, unknown> {
   is_strike?: boolean;
   highlight_color?: string;
   is_all_caps?: boolean;
+  space_before_pt?: number;
+  space_after_pt?: number;
+  first_line_indent_pt?: number;
   paragraph_alignment?: string;
   operation?: OperationType;
 }
