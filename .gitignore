@@ -4,6 +4,10 @@ __pycache__/
 *.log
 *.sqlite3
 *.db
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
 *.egg-info/
 .pytest_cache/
 .venv/
@@ -14,6 +18,8 @@ agent_workspace/
 config.json
 data/*.db
 sessions/*.db
+sessions/*.db-shm
+sessions/*.db-wal
 output/
 src/frontend/node_modules/
 src/frontend/dist/
