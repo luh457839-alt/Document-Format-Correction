@@ -1,6 +1,7 @@
 export * from "./core/types.js";
 export * from "./core/errors.js";
 export * from "./document-execution/facade.js";
+export * from "./document-execution/unified-write-pipeline.js";
 export * from "./document-tooling/facade.js";
 export * from "./model-gateway/structured-model-gateway.js";
 export * from "./planner/fixed-planner.js";

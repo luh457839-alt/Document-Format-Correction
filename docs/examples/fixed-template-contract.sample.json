@@ -1,16 +1,17 @@
 {
   "template_meta": {
-    "id": "fixed_template_structural_sample",
-    "name": "固定模板通用结构语义示例",
-    "version": "0.5.0",
-    "schema_version": "1.0",
-    "description": "面向固定模板编写规范与联调的通用结构语义母版，按解析器当前可见的段落结构建模，并显式展示统一图片段落、结构覆盖与语义继承机制。",
+    "id": "official_document_fixed_template_patchdsl_sample",
+    "name": "固定模板 Patch DSL 结构语义示例",
+    "version": "0.6.0",
+    "schema_version": "2.0",
+    "description": "面向固定模板编写规范与联调的 Patch DSL 示例，主契约使用 patch_blocks，同时展示段落级语义写入与文档级页面布局 patch。",
     "locale": "zh-CN",
     "author": "Codex",
     "tags": [
       "sample",
       "development",
       "fixed-template",
+      "patch-dsl",
       "structural-semantics"
     ]
   },
@@ -21,7 +22,7 @@
       "description": "匹配任意具备图片证据的段落；可为纯图片，也可为图片加少量图号或说明文字，不替代文本标题。",
       "examples": [
         "（图片段落）",
-        "图7.1.1 模型输出截图"
+        "图 7.1.1 模型输出截图"
       ],
       "negative_examples": [
         "自然语言处理课程作业评分细则",
@@ -47,7 +48,7 @@
     {
       "key": "heading_level_1",
       "label": "一级结构标题",
-      "description": "DOCX 原生一级标题；以解析结果中的 heading_level=1 为准，不等于某种固定编号形态。",
+      "description": "DOCX 原生一级标题；以解析结果中的 heading_level = 1 为准，不等于某种固定编号形态。",
       "examples": [
         "一、课程目标",
         "第一章 总则"
@@ -58,7 +59,7 @@
     {
       "key": "heading_level_2",
       "label": "二级结构标题",
-      "description": "DOCX 原生二级标题；以解析结果中的 heading_level=2 为准，不等于某种固定编号形态。",
+      "description": "DOCX 原生二级标题；以解析结果中的 heading_level = 2 为准，不等于某种固定编号形态。",
       "examples": [
         "（一）实验内容",
         "3.1 实验数据集"
@@ -69,7 +70,7 @@
     {
       "key": "heading_level_3",
       "label": "三级结构标题",
-      "description": "DOCX 原生三级标题；以解析结果中的 heading_level=3 为准，不等于某种固定编号形态。",
+      "description": "DOCX 原生三级标题；以解析结果中的 heading_level = 3 为准，不等于某种固定编号形态。",
       "examples": [
         "1. 词法分析",
         "3.1.1 数据来源"
@@ -90,7 +91,7 @@
     {
       "key": "list_item_level_0",
       "label": "一级列表项",
-      "description": "解析器识别为 list_item 且 list_level=0 的段落。",
+      "description": "解析器识别为 list_item 且 list_level = 0 的段落。",
       "examples": [
         "- 提交 PDF 报告与源代码链接"
       ],
@@ -100,7 +101,7 @@
     {
       "key": "list_item_level_1",
       "label": "二级列表项",
-      "description": "解析器识别为 list_item 且 list_level=1 的段落。",
+      "description": "解析器识别为 list_item 且 list_level = 1 的段落。",
       "examples": [
         "  - 报告需包含实验截图与结果分析"
       ],
@@ -362,120 +363,235 @@
       }
     ]
   },
-  "operation_blocks": [
+  "patch_blocks": [
+    {
+      "semantic_key": "document_page_layout",
+      "selector": {
+        "part": "document",
+        "scope": "section",
+        "match": {
+          "section_index": 0
+        }
+      },
+      "operations": [
+        {
+          "type": "set_section_layout",
+          "section_layout": {
+            "paper_size": "A4",
+            "margin_top_cm": 2.5,
+            "margin_bottom_cm": 2.0,
+            "margin_left_cm": 2.8,
+            "margin_right_cm": 2.6
+          }
+        }
+      ]
+    },
     {
       "semantic_key": "cover_image",
-      "text_style": {},
-      "paragraph_style": {}
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "center"
+          }
+        }
+      ]
     },
     {
       "semantic_key": "document_title",
-      "text_style": {
-        "font_name": "方正小标宋简体",
-        "font_size_pt": 22,
-        "is_bold": false
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "paragraph_style": {
-        "paragraph_alignment": "center",
-        "line_spacing": 1
-      }
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "center",
+            "line_spacing": 1
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "方正小标宋简体",
+            "font_size_pt": 22,
+            "is_bold": false
+          }
+        }
+      ]
     },
     {
       "semantic_key": "heading_level_1",
-      "text_style": {
-        "font_name": "黑体",
-        "font_size_pt": 16,
-        "is_bold": true
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": 1.5
-      }
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": 1.5
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "黑体",
+            "font_size_pt": 16,
+            "is_bold": true
+          }
+        }
+      ]
     },
     {
       "semantic_key": "heading_level_2",
-      "text_style": {
-        "font_name": "楷体_GB2312",
-        "font_size_pt": 16,
-        "is_bold": true
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": 1.5
-      }
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": 1.5
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "楷体_GB2312",
+            "font_size_pt": 16,
+            "is_bold": true
+          }
+        }
+      ]
     },
     {
       "semantic_key": "heading_level_3",
-      "text_style": {
-        "font_name": "仿宋_GB2312",
-        "font_size_pt": 16,
-        "is_bold": true
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": 1.5
-      }
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": 1.5
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "仿宋_GB2312",
+            "font_size_pt": 16,
+            "is_bold": true
+          }
+        }
+      ]
     },
     {
       "semantic_key": "body_paragraph",
-      "text_style": {
-        "font_name": "仿宋_GB2312",
-        "font_size_pt": 16,
-        "is_bold": false
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "language_font_overrides": {
-        "zh": {
-          "font_name": "仿宋_GB2312"
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": 1.5
+          }
         },
-        "en": {
-          "font_name": "Times New Roman"
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "仿宋_GB2312",
+            "font_size_pt": 16,
+            "is_bold": false
+          }
         }
-      },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": 1.5
-      }
+      ]
     },
     {
       "semantic_key": "list_item_level_0",
-      "text_style": {
-        "font_name": "仿宋_GB2312",
-        "font_size_pt": 16,
-        "is_bold": false
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": 1.5
-      }
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": 1.5
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "仿宋_GB2312",
+            "font_size_pt": 16,
+            "is_bold": false
+          }
+        }
+      ]
     },
     {
       "semantic_key": "list_item_level_1",
-      "text_style": {
-        "font_name": "仿宋_GB2312",
-        "font_size_pt": 16,
-        "is_bold": false
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": 1.5
-      }
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": 1.5
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "仿宋_GB2312",
+            "font_size_pt": 16,
+            "is_bold": false
+          }
+        }
+      ]
     },
     {
       "semantic_key": "table_text",
-      "text_style": {
-        "font_name": "宋体",
-        "font_size_pt": 12,
-        "is_bold": false
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": 1
-      }
-    },
-    {
-      "semantic_key": "blank_or_unknown",
-      "text_style": {},
-      "paragraph_style": {}
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": 1
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "宋体",
+            "font_size_pt": 12,
+            "is_bold": false
+          }
+        }
+      ]
     }
   ],
   "classification_contract": {
@@ -525,8 +641,7 @@
         "document_title、body_paragraph 等语义在标准模板中默认不承担拦截责任；缺少单独主标题或正文时也允许通过。",
         "用户上传任意 DOCX 默认都允许通过，包括只有标题没有正文、没有主标题、空表格单元格和大量空白段。",
         "标准模板中的 cover_image 统一承接所有非表格图片段落；只要求图片证据与非表格约束，不再限定文首位置。",
-        "blank_or_unknown 只吸收空白段、装饰段或 unknown bucket 段落，不能替代列表、表格或正文覆盖。",
-        "blank_or_unknown 不应吸收任何有图片证据的段落。",
+        "blank_or_unknown 只吸收空白段、装饰段或 unknown bucket 段落，不能替代表格、列表或正文覆盖。",
         "未知 semantic_key 只会进入 diagnostics，不等于模板已覆盖该段落。",
         "heading_level_n 表示 DOCX 原生标题层级，不表示某种固定编号形态。",
         "如果业务需要区分封面图、正文插图、结果截图或公式图片，应通过 derived_semantics 从 cover_image 继续 refine，而不是新增并行 atomic 图片语义。",
@@ -537,84 +652,58 @@
       "atomic_semantics": "semantic_blocks 负责 paragraph 级单 owner 归属，是模板稳定分类与写入映射的基础；默认不代表必须命中或必须校验。",
       "derived_semantics": "derived_semantics 负责从 atomic semantics 聚合或细分业务语义，不直接改变 paragraph 原子 owner。"
     },
-    "inheritance_mechanism": {
-      "aggregate": {
-        "definition": "把多个 atomic semantics 聚合成一个更符合用户理解的业务语义。",
-        "allowed_for": [
-          "统一正文视图",
-          "统一样式写入视图",
-          "减少多个原子语义重复配置相同操作"
-        ],
-        "constraints": [
-          "不得改变原子 paragraph owner。",
-          "只能聚合已有 atomic semantics。",
-          "若存在 refine 子语义，写入规划阶段应从 aggregate 父集合中裁掉子集合以避免重复写入。"
-        ]
-      },
-      "refine": {
-        "definition": "在父语义候选集合中再细分出更具体的业务语义。",
-        "allowed_for": [
-          "抄送机关",
-          "落款说明",
-          "正文内部特殊业务段"
-        ],
-        "constraints": [
-          "候选集合必须来自已命中的 atomic semantics。",
-          "结果必须是父集合的子集，不能凭空新增 paragraph owner。",
-          "应优先结合 text_hints、negative_examples 等稳定信号缩小命中范围。"
-        ]
-      }
-    },
     "recommended_authoring_steps": [
       "先确认目标文档会出现哪些 paragraph 结构类型。",
       "先写 semantic_blocks 覆盖全部结构类型，不直接跳到业务章节名。",
-      "为每个 atomic semantic 写 semantic_rules 与 operation_blocks。",
-      "标准模板默认允许空文本，保留 blank_or_unknown 作为宽松兜底。",
+      "用 patch_blocks 为需要执行的语义声明 selector 和 operations。",
+      "若存在文档级布局或样式定义，使用非 paragraph selector 单独建 block，不必硬塞进 atomic semantic。",
       "只有在 atomic 层稳定后，才添加 derived_semantics。",
-      "检查每个 derived semantic 是否都能明确追溯到父 atomic semantics。",
       "如果业务确实需要拦截，再显式把 validation_policy.enforce_validation 设为 true 并补齐严格规则。"
-    ],
-    "llm_checklist": [
-      "默认模板不要把任意缺失、顺序、编号、样式问题直接当作失败条件。",
-      "不要只写 title/body 两类就试图覆盖完整文档。",
-      "不要把尚未稳定可见的业务概念直接写成 atomic semantic。",
-      "不要遗漏 table_text、list_item_level_* 或 blank_or_unknown。",
-      "不要复用 heading_level_n 去表达编号样式；如果业务真要按编号形态区分，请新增独立语义。",
-      "不要让 derived semantics 绕过 atomic semantics 直接争夺 paragraph owner。",
-      "只有在用户明确要求严格模式时，才启用 enforce_validation=true 并按需打开细分校验开关。"
     ]
   },
   "development_notes": {
     "do_not_scan_from_frontend": true,
     "intended_location": "docs/examples",
     "companion_doc": "docs/examples/fixed-template-contract.sample.md",
-    "usage": "复制到 templates 根目录后，先保留结构全覆盖集合，再按业务需要裁剪结构语义、补充派生语义和具体样式。"
+    "usage": "复制到 templates 根目录后，先保留结构全覆盖集合，再按业务需要裁剪结构语义、补充派生语义和具体 patch block。"
   },
   "runtime_notes": {
     "classification_reads": [
       "semantic_blocks",
       "layout_rules"
     ],
-    "write_planner_supported_fields": [
-      "text_style.font_name",
-      "text_style.font_size_pt",
-      "text_style.font_color",
-      "text_style.is_bold",
-      "text_style.is_italic",
-      "text_style.is_underline",
-      "text_style.is_strike",
-      "text_style.highlight_color",
-      "text_style.is_all_caps",
-      "operation_blocks.language_font_overrides.zh.font_name",
-      "operation_blocks.language_font_overrides.en.font_name",
-      "paragraph_style.line_spacing",
-      "paragraph_style.paragraph_alignment"
+    "patch_blocks_supported_selectors": [
+      "document/paragraph",
+      "document/run",
+      "document/section",
+      "styles/style",
+      "numbering/numbering_level",
+      "settings/settings_node",
+      "by_part_path/*"
+    ],
+    "patch_blocks_supported_aliases": [
+      "set_run_style",
+      "set_paragraph_style",
+      "set_section_layout",
+      "set_style_definition",
+      "set_numbering_level",
+      "set_settings_flag"
+    ],
+    "patch_blocks_supported_primitives": [
+      "set_attr",
+      "remove_attr",
+      "set_text",
+      "remove_node",
+      "ensure_node",
+      "replace_node_xml"
+    ],
+    "compatibility_notes": [
+      "`operation_blocks` 仍可作为过渡输入保留，但 public sample 以 `patch_blocks` 为唯一主写入契约。",
+      "`language_font_overrides` 仍走兼容层追加 run 级 patch，不作为本 sample 的主契约展示。"
     ],
     "notes": [
-      "style_reference.page 仅作为文档级规格参考，不参与 paragraph 级分类。",
-      "blank_or_unknown 的 operation_block 为 no-op，用于严格模板下吸收空白段和装饰段。",
-      "language_font_overrides 在 paragraph 样式计划之后执行，仅对命中的中英文 run 片段覆盖 font_name。",
-      "derived_semantics 是业务表达层，不改变 atomic semantics 的 paragraph 单 owner 契约。",
+      "document_page_layout 使用 section selector 编译为文档级 patch，不参与 paragraph 级分类。",
+      "blank_or_unknown 在该 sample 中只承担分类兜底，不强制声明写入 block。",
       "编写新模板时，应优先保证 atomic semantics 覆盖所有当前解析器可见的 paragraph 元素种类。"
     ]
   }

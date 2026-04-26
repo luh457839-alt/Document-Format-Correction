@@ -355,13 +355,6 @@ async function buildExecutionDocument(
 ): Promise<DocumentIR> {
   const observation = await observeDocument(inputDocxPath);
   const nodes = documentStateToNodes(observation);
-  if (nodes.length === 0) {
-    throw new AgentError({
-      code: "E_DOCX_EMPTY",
-      message: "Loaded input DOCX has no editable text nodes.",
-      retryable: false
-    });
-  }
 
   return {
     id: `session_${sessionId}`,
@@ -370,6 +363,8 @@ async function buildExecutionDocument(
     metadata: {
       inputDocxPath,
       outputDocxPath: path.join(outputRootDir, `${sessionId}.docx`),
+      docxObservation: observation,
+      docxPackageModel: observation.package_model,
       sourceDocumentMeta: observation.document_meta,
       structureIndex: buildStructureIndex(observation)
     }
@@ -693,6 +688,15 @@ function normalizeOperationType(value: unknown): OperationType | null {
     "set_page_layout",
     "set_paragraph_spacing",
     "set_paragraph_indent",
+    "set_style_definition",
+    "set_numbering_level",
+    "set_settings_flag",
+    "set_attr",
+    "remove_attr",
+    "set_text",
+    "remove_node",
+    "ensure_node",
+    "replace_node_xml",
     "merge_paragraph",
     "split_paragraph"
   ];
@@ -840,6 +844,33 @@ function describeOperation(operationType: OperationType): string | null {
   }
   if (operationType === "set_paragraph_indent") {
     return "段落缩进";
+  }
+  if (operationType === "set_style_definition") {
+    return "样式定义";
+  }
+  if (operationType === "set_numbering_level") {
+    return "编号级别";
+  }
+  if (operationType === "set_settings_flag") {
+    return "文档设置";
+  }
+  if (operationType === "set_attr") {
+    return "XML 属性";
+  }
+  if (operationType === "remove_attr") {
+    return "XML 属性移除";
+  }
+  if (operationType === "set_text") {
+    return "XML 文本";
+  }
+  if (operationType === "remove_node") {
+    return "XML 节点移除";
+  }
+  if (operationType === "ensure_node") {
+    return "XML 节点补齐";
+  }
+  if (operationType === "replace_node_xml") {
+    return "XML 节点替换";
   }
   if (operationType === "merge_paragraph") {
     return "段落合并";

@@ -1,0 +1,1036 @@
+{
+  "template_meta": {
+    "id": "official_document_patchdsl_template",
+    "name": "公文式固定模板（Patch DSL）",
+    "version": "0.7.0",
+    "schema_version": "2.0",
+    "description": "按公文式固定排版要求编写的 Patch DSL 模板，主路径使用 patch_blocks，默认放行，不把缺项、顺序、编号或样式偏差当作失败。",
+    "locale": "zh-CN",
+    "author": "Codex",
+    "tags": [
+      "sample",
+      "development",
+      "fixed-template",
+      "official-document",
+      "patch-dsl"
+    ]
+  },
+  "semantic_blocks": [
+    {
+      "key": "document_title",
+      "label": "文档标题",
+      "description": "文首主标题，使用方正小标宋简体二号，居中排版。",
+      "examples": [
+        "关于开展专项检查工作的通知"
+      ],
+      "negative_examples": [
+        "某某单位",
+        "一、总体要求"
+      ],
+      "required": false,
+      "multiple": false
+    },
+    {
+      "key": "organization_name",
+      "label": "单位名称",
+      "description": "标题下方的单位名称或发文机关名称，通常单独成行并居中。",
+      "examples": [
+        "某某市人民政府办公室"
+      ],
+      "negative_examples": [
+        "关于开展专项检查工作的通知",
+        "现将有关事项通知如下。"
+      ],
+      "required": false,
+      "multiple": false
+    },
+    {
+      "key": "blank_or_unknown",
+      "label": "空白或未知段落",
+      "description": "用于吸收标题与单位名称后的空一行、装饰分隔符以及当前无法稳定细分的段落。",
+      "examples": [
+        "（空白段）",
+        "——"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "body_paragraph",
+      "label": "正文段落",
+      "description": "普通正文段落，使用仿宋_GB2312 三号、28 磅固定行距、首行缩进 2 字符。",
+      "examples": [
+        "现将有关事项通知如下。"
+      ],
+      "negative_examples": [
+        "一、总体要求",
+        "表 1 项目进度安排"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "heading_level_1",
+      "label": "一级标题",
+      "description": "公文一级标题，通常保留文本编号，如“一、”。",
+      "examples": [
+        "一、总体要求"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "heading_level_2",
+      "label": "二级标题",
+      "description": "公文二级标题，通常保留文本编号，如“（一）”。",
+      "examples": [
+        "（一）组织领导"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "heading_level_3",
+      "label": "三级标题",
+      "description": "公文三级标题，通常保留文本编号，如“1.”，字体为加粗仿宋。",
+      "examples": [
+        "1. 任务分工"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "heading_level_4",
+      "label": "四级标题",
+      "description": "公文四级标题，通常保留文本编号，如“（1）”，字体为不加粗仿宋。",
+      "examples": [
+        "（1）材料准备"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "table_caption",
+      "label": "表题",
+      "description": "表格上方的表题，使用黑体小四、居中，前后各留 0.5 行。",
+      "examples": [
+        "表 1 项目进度安排"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "table_header",
+      "label": "表头",
+      "description": "表格首行表头单元格文本，使用黑体五号。",
+      "examples": [
+        "序号",
+        "项目名称",
+        "完成时限"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "table_body",
+      "label": "表体",
+      "description": "表格正文单元格文本，中文宋体五号，单元格转行时 18 磅固定行距。",
+      "examples": [
+        "1",
+        "2026-04-25",
+        "组织实施"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "figure",
+      "label": "插图",
+      "description": "图片或图形所在段落，不承担标题文本语义。",
+      "examples": [
+        "（插图段落）"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "figure_caption",
+      "label": "图题",
+      "description": "插图下方图题，样式与表题一致，但位置在图下方。",
+      "examples": [
+        "图 1 工作流程图"
+      ],
+      "required": false,
+      "multiple": true
+    },
+    {
+      "key": "page_number",
+      "label": "页码",
+      "description": "页码文本规范，要求宋体小四，格式如“-5-”。",
+      "examples": [
+        "-5-"
+      ],
+      "required": false,
+      "multiple": true
+    }
+  ],
+  "derived_semantics": [
+    {
+      "key": "blank_line_after_front_matter",
+      "label": "前置信息后的空行",
+      "mode": "refine",
+      "inherits_from": [
+        "blank_or_unknown"
+      ],
+      "examples": [
+        "（单位名称之后的空一行）"
+      ],
+      "text_hints": [
+        "空白段",
+        "标题和单位名称之后的过渡空行"
+      ],
+      "negative_examples": [
+        "——",
+        "分页分隔空白"
+      ],
+      "operation": {
+        "text_style": {},
+        "paragraph_style": {}
+      }
+    },
+    {
+      "key": "body_content",
+      "label": "正文内容",
+      "mode": "aggregate",
+      "inherits_from": [
+        "body_paragraph",
+        "heading_level_1",
+        "heading_level_2",
+        "heading_level_3",
+        "heading_level_4",
+        "table_caption",
+        "table_header",
+        "table_body",
+        "figure",
+        "figure_caption"
+      ],
+      "examples": [
+        "一、总体要求",
+        "现将有关事项通知如下。",
+        "表 1 项目进度安排",
+        "图 1 工作流程图"
+      ],
+      "operation": {
+        "text_style": {
+          "font_name": "仿宋_GB2312",
+          "font_size_pt": 16,
+          "is_bold": false
+        },
+        "paragraph_style": {
+          "paragraph_alignment": "justify",
+          "line_spacing": {
+            "mode": "exact",
+            "pt": 28
+          },
+          "first_line_indent_chars": 2
+        }
+      }
+    }
+  ],
+  "layout_rules": {
+    "global_rules": {
+      "document_scope": "full_document",
+      "ordering": [
+        "document_title",
+        "organization_name",
+        "blank_or_unknown",
+        "body_paragraph",
+        "heading_level_1",
+        "heading_level_2",
+        "heading_level_3",
+        "heading_level_4",
+        "table_caption",
+        "table_header",
+        "table_body",
+        "figure",
+        "figure_caption",
+        "page_number"
+      ],
+      "allow_unclassified_paragraphs": false,
+      "page_layout_reference": {
+        "paper_size": "A4",
+        "margin_top_cm": 3.7,
+        "margin_bottom_cm": 3.5,
+        "margin_left_cm": 2.8,
+        "margin_right_cm": 2.6
+      }
+    },
+    "semantic_rules": [
+      {
+        "semantic_key": "document_title",
+        "position_hints": [
+          "first_non_blank",
+          "near_top"
+        ],
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "heading",
+            "title"
+          ],
+          "preferred_bucket_type": [
+            "heading",
+            "title"
+          ],
+          "must_not_be_in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 1
+        }
+      },
+      {
+        "semantic_key": "organization_name",
+        "position_hints": [
+          "after:document_title",
+          "near_top"
+        ],
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "body",
+            "title",
+            "heading"
+          ],
+          "must_not_be_in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 1
+        }
+      },
+      {
+        "semantic_key": "blank_or_unknown",
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "unknown"
+          ]
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 200
+        }
+      },
+      {
+        "semantic_key": "body_paragraph",
+        "style_hints": {
+          "allow_empty_text": true,
+          "role": "body",
+          "must_not_be_in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 800
+        }
+      },
+      {
+        "semantic_key": "heading_level_1",
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "heading",
+            "body"
+          ],
+          "must_not_be_in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 120
+        }
+      },
+      {
+        "semantic_key": "heading_level_2",
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "heading",
+            "body"
+          ],
+          "must_not_be_in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 200
+        }
+      },
+      {
+        "semantic_key": "heading_level_3",
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "heading",
+            "body"
+          ],
+          "must_not_be_in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 200
+        }
+      },
+      {
+        "semantic_key": "heading_level_4",
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "heading",
+            "body"
+          ],
+          "must_not_be_in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 200
+        }
+      },
+      {
+        "semantic_key": "table_caption",
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "body"
+          ],
+          "must_not_be_in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 120
+        }
+      },
+      {
+        "semantic_key": "table_header",
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "table_text",
+            "body"
+          ],
+          "in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 500
+        }
+      },
+      {
+        "semantic_key": "table_body",
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "table_text",
+            "body"
+          ],
+          "in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 1200
+        }
+      },
+      {
+        "semantic_key": "figure",
+        "style_hints": {
+          "allow_empty_text": true,
+          "require_image": true,
+          "must_not_be_in_table": true,
+          "preferred_role": [
+            "unknown",
+            "body"
+          ]
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 200
+        }
+      },
+      {
+        "semantic_key": "figure_caption",
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "body"
+          ],
+          "must_not_be_in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 200
+        }
+      },
+      {
+        "semantic_key": "page_number",
+        "style_hints": {
+          "allow_empty_text": true,
+          "preferred_role": [
+            "unknown",
+            "body"
+          ],
+          "must_not_be_in_table": true
+        },
+        "occurrence": {
+          "min_occurs": 0,
+          "max_occurs": 400
+        }
+      }
+    ]
+  },
+  "patch_blocks": [
+    {
+      "semantic_key": "document_page_layout",
+      "selector": {
+        "part": "document",
+        "scope": "section",
+        "match": {
+          "section_index": 0
+        }
+      },
+      "operations": [
+        {
+          "type": "set_section_layout",
+          "section_layout": {
+            "paper_size": "A4",
+            "margin_top_cm": 3.7,
+            "margin_bottom_cm": 3.5,
+            "margin_left_cm": 2.8,
+            "margin_right_cm": 2.6
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "document_title",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "center",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 30
+            }
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "方正小标宋简体",
+            "font_size_pt": 22,
+            "is_bold": false
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "organization_name",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "center",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 28
+            }
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "楷体_GB2312",
+            "font_size_pt": 15,
+            "is_bold": false
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "body_paragraph",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 28
+            },
+            "first_line_indent_chars": 2
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "仿宋_GB2312",
+            "font_size_pt": 16,
+            "is_bold": false
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "heading_level_1",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "left",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 28
+            },
+            "first_line_indent_chars": 2
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "黑体",
+            "font_size_pt": 16,
+            "is_bold": false
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "heading_level_2",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "left",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 28
+            },
+            "first_line_indent_chars": 2
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "楷体_GB2312",
+            "font_size_pt": 16,
+            "is_bold": false
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "heading_level_3",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "left",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 28
+            },
+            "first_line_indent_chars": 2
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "仿宋_GB2312",
+            "font_size_pt": 16,
+            "is_bold": true
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "heading_level_4",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "left",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 28
+            },
+            "first_line_indent_chars": 2
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "仿宋_GB2312",
+            "font_size_pt": 16,
+            "is_bold": false
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "table_caption",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "center",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 28
+            },
+            "space_before_pt": 14,
+            "space_after_pt": 14
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "黑体",
+            "font_size_pt": 12,
+            "is_bold": false
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "table_header",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "center",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 18
+            }
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "黑体",
+            "font_size_pt": 10.5,
+            "is_bold": false
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "table_body",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 18
+            }
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "宋体",
+            "font_size_pt": 10.5,
+            "is_bold": false
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "figure",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "center"
+          }
+        }
+      ]
+    },
+    {
+      "semantic_key": "figure_caption",
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "center",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 28
+            },
+            "space_before_pt": 14,
+            "space_after_pt": 14
+          }
+        },
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "黑体",
+            "font_size_pt": 12,
+            "is_bold": false
+          }
+        }
+      ]
+    }
+  ],
+  "classification_contract": {
+    "scope": "paragraph",
+    "single_owner_per_paragraph": true,
+    "matches": [],
+    "unmatched_paragraph_ids": [],
+    "conflicts": [],
+    "overall_confidence": 0
+  },
+  "validation_policy": {
+    "enforce_validation": false,
+    "min_confidence": 0.8,
+    "require_all_required_semantics": false,
+    "reject_conflicting_matches": false,
+    "reject_order_violations": false,
+    "reject_style_violations": false,
+    "reject_unmatched_when_required": false
+  },
+  "style_reference": {
+    "page": {
+      "paper_size": "A4",
+      "margin_top_cm": 3.7,
+      "margin_bottom_cm": 3.5,
+      "margin_left_cm": 2.8,
+      "margin_right_cm": 2.6,
+      "header_distance_cm": 1.5,
+      "footer_distance_cm": 2.8,
+      "page_number_layout": {
+        "font_name": "宋体",
+        "font_size_cn": "小四",
+        "font_size_pt": 12,
+        "mirror_outside": true,
+        "odd_page_alignment": "right_outside",
+        "even_page_alignment": "left_outside",
+        "format_example": "-5-",
+        "notes": "页码采用奇偶页镜像外侧写法；当前模板先保留规范说明，不把页码自动生成写死在 patch DSL 中。"
+      }
+    },
+    "document_title": {
+      "font_name": "方正小标宋简体",
+      "font_size_cn": "二号",
+      "font_size_pt": 22,
+      "bold": false,
+      "paragraph_alignment": "center",
+      "line_spacing_pt": 30
+    },
+    "organization_name": {
+      "font_name": "楷体_GB2312",
+      "font_size_cn": "小三",
+      "font_size_pt": 15,
+      "bold": false,
+      "paragraph_alignment": "center",
+      "line_spacing_pt": 28
+    },
+    "body_paragraph": {
+      "font_name": "仿宋_GB2312",
+      "font_size_cn": "三号",
+      "font_size_pt": 16,
+      "bold": false,
+      "paragraph_alignment": "justify",
+      "first_line_indent_chars": 2,
+      "line_spacing_pt": 28
+    },
+    "heading_level_1": {
+      "font_name": "黑体",
+      "font_size_cn": "三号",
+      "font_size_pt": 16,
+      "bold": false,
+      "paragraph_alignment": "left",
+      "first_line_indent_chars": 2,
+      "line_spacing_pt": 28
+    },
+    "heading_level_2": {
+      "font_name": "楷体_GB2312",
+      "font_size_cn": "三号",
+      "font_size_pt": 16,
+      "bold": false,
+      "paragraph_alignment": "left",
+      "first_line_indent_chars": 2,
+      "line_spacing_pt": 28
+    },
+    "heading_level_3": {
+      "font_name": "仿宋_GB2312",
+      "font_size_cn": "三号",
+      "font_size_pt": 16,
+      "bold": true,
+      "paragraph_alignment": "left",
+      "first_line_indent_chars": 2,
+      "line_spacing_pt": 28
+    },
+    "heading_level_4": {
+      "font_name": "仿宋_GB2312",
+      "font_size_cn": "三号",
+      "font_size_pt": 16,
+      "bold": false,
+      "paragraph_alignment": "left",
+      "first_line_indent_chars": 2,
+      "line_spacing_pt": 28
+    },
+    "table_caption": {
+      "font_name": "黑体",
+      "font_size_cn": "小四",
+      "font_size_pt": 12,
+      "bold": false,
+      "paragraph_alignment": "center",
+      "line_spacing_pt": 28,
+      "before_after_half_line_pt": 14
+    },
+    "table_header": {
+      "font_name": "黑体",
+      "font_size_cn": "五号",
+      "font_size_pt": 10.5,
+      "bold": false
+    },
+    "table_body": {
+      "font_name_zh": "宋体",
+      "font_name_digits": "Times New Roman",
+      "font_size_cn": "五号",
+      "font_size_pt": 10.5,
+      "cell_line_spacing_pt": 18
+    },
+    "figure_caption": {
+      "font_name": "黑体",
+      "font_size_cn": "小四",
+      "font_size_pt": 12,
+      "bold": false,
+      "paragraph_alignment": "center",
+      "line_spacing_pt": 28,
+      "caption_position": "below_figure"
+    },
+    "page_number": {
+      "font_name": "宋体",
+      "font_size_cn": "小四",
+      "font_size_pt": 12,
+      "format_example": "-5-"
+    }
+  },
+  "authoring_guidance": {
+    "purpose": "该模板是可直接复制裁剪的公文式 Patch DSL 样板，强调格式优先、默认放行。",
+    "coverage_contract": {
+      "principle": "语义细分服务于分类、写入映射和后续扩展，不默认把缺项、顺序、编号或样式偏差当作失败。",
+      "required_atomic_semantics": [
+        "document_title",
+        "organization_name",
+        "blank_or_unknown",
+        "body_paragraph",
+        "heading_level_1",
+        "heading_level_2",
+        "heading_level_3",
+        "heading_level_4",
+        "table_caption",
+        "table_header",
+        "table_body",
+        "figure",
+        "figure_caption",
+        "page_number"
+      ],
+      "rules": [
+        "缺单位名称、缺表题、缺图题、缺页码文本时，默认放行模板仍允许通过。",
+        "标题、单位名称与正文之间的空一行通过 blank_or_unknown + blank_line_after_front_matter 表达，不单独发明运行时必拦截规则。",
+        "表头与表体先在模板规范层面分开；若当前观察链路无法稳定区分，允许保留为草案字段，不直接拦截。",
+        "figure 语义只承接图片段落本身，figure_caption 单独承接图下文字说明。",
+        "page_number 语义记录页码样式要求，不等于当前运行时已经自动排版成功。"
+      ]
+    },
+    "fixed_front_matter": {
+      "ordering": [
+        "document_title",
+        "organization_name",
+        "blank_line_after_front_matter",
+        "body_content"
+      ],
+      "notes": [
+        "固定前部结构按“标题 -> 单位名称 -> 空一行 -> 正文内容”表达。",
+        "layout_rules.global_rules.ordering 仍只对 atomic semantics 建模；derived semantics 用于补足 blank_line_after_front_matter 与 body_content 的业务表达。"
+      ]
+    },
+    "numbering_policy": {
+      "preserve_text_numbering": true,
+      "rely_on_word_auto_numbering": false,
+      "authoring_requirement": "取消自动生成格式，编号作为正文文本保留，不依赖 Word 自动编号。",
+      "notes": [
+        "一级到四级标题编号全部按文本内容保留。",
+        "默认放行模式下不因编号缺失、层级不规范或编号样式不一致而拦截。"
+      ]
+    },
+    "table_and_figure_policy": {
+      "table_caption_position": "above_table",
+      "figure_caption_position": "below_figure",
+      "caption_spacing_policy": "表题、图题均按前后 0.5 行写入 paragraph_style.space_before_pt = 14 和 space_after_pt = 14。"
+    }
+  },
+  "runtime_notes": {
+    "patch_blocks_supported_aliases": [
+      "set_run_style",
+      "set_paragraph_style",
+      "set_section_layout"
+    ],
+    "notes": [
+      "style_reference.page.header_distance_cm、footer_distance_cm 与 page_number_layout 当前作为规范保留字段，不参与 set_section_layout payload 生成。",
+      "table_body 中的数字字体 Times New Roman 仍属于说明性目标；若需要中英文 run 级差异化字体覆写，当前应结合兼容层能力处理。",
+      "page_number 语义用于记录页码样式要求，当前模板不直接承诺自动生成“奇偶页镜像外侧”的页码布局。"
+    ]
+  }
+}

@@ -10,7 +10,7 @@ const template: TemplateContract = {
     id: "official_doc_body",
     name: "公文正文模板",
     version: "1.0.0",
-    schema_version: "1.0"
+    schema_version: "2.0"
   },
   semantic_blocks: [
     {

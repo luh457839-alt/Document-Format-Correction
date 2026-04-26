@@ -39,7 +39,7 @@ const baseTemplate = {
     id: "official_doc_body",
     name: "公文正文模板",
     version: "1.0.0",
-    schema_version: "1.0"
+    schema_version: "2.0"
   },
   semantic_blocks: [
     {
@@ -286,6 +286,257 @@ const mixedLanguageObservation: PythonDocxObservationState = {
     }
   ]
 };
+
+function legacyBlockToOperations(block: {
+  text_style?: Record<string, unknown>;
+  paragraph_style?: Record<string, unknown>;
+  relative_spacing?: Record<string, unknown>;
+}) {
+  const operations: Array<Record<string, unknown>> = [];
+  if (Object.keys(block.paragraph_style ?? {}).length > 0) {
+    operations.push({
+      type: "set_paragraph_style",
+      paragraph_style: block.paragraph_style
+    });
+  }
+  if (Object.keys(block.text_style ?? {}).length > 0) {
+    operations.push({
+      type: "set_run_style",
+      text_style: block.text_style
+    });
+  }
+  if ((block.relative_spacing ?? {}).before_pt !== undefined) {
+    operations.push({
+      type: "set_paragraph_style",
+      paragraph_style: {
+        space_before_pt: (block.relative_spacing ?? {}).before_pt
+      }
+    });
+  }
+  if ((block.relative_spacing ?? {}).after_pt !== undefined) {
+    operations.push({
+      type: "set_paragraph_style",
+      paragraph_style: {
+        space_after_pt: (block.relative_spacing ?? {}).after_pt
+      }
+    });
+  }
+  return operations;
+}
+
+function derivedOperationToOperations(operation: {
+  text_style?: Record<string, unknown>;
+  paragraph_style?: Record<string, unknown>;
+  relative_spacing?: Record<string, unknown>;
+}) {
+  return legacyBlockToOperations(operation);
+}
+
+function summarizeLegacyOperation(operation: any) {
+  return {
+    id: operation.id,
+    type: operation.type,
+    targetSelector: operation.targetSelector,
+    targetNodeIds: operation.targetNodeIds,
+    patchTargetIds: operation.patchTargetIds,
+    payload: operation.payload
+  };
+}
+
+function summarizeWriteIntent(intent: any) {
+  const target = intent?.target ?? {};
+  const nodeIds = target.kind === "node_ids" ? target.nodeIds : undefined;
+  return {
+    id: intent.id,
+    type: intent.type,
+    targetSelector: target.kind === "selector" ? target.selector : undefined,
+    targetNodeIds: nodeIds,
+    patchTargetIds:
+      target.kind === "patch_targets"
+        ? target.patchTargetIds
+        : nodeIds?.map((nodeId: string) => `target:inline:${nodeId}`),
+    payload: intent.payload
+  };
+}
+
+function summarizeExecutionPlan(items: any[]) {
+  return items.map((item) => ({
+    semantic_key: item.semantic_key,
+    paragraph_ids: item.paragraph_ids,
+    selector: item.selector,
+    operations: item.operations,
+    source_block: item.source_block
+      ? {
+          semantic_key: item.source_block.semantic_key,
+          selector: item.source_block.selector,
+          operations: item.source_block.operations
+        }
+      : undefined
+  }));
+}
+
+function summarizePatchPlan(items: any[]) {
+  return groupTemplatePlanItems(
+    items.map((item: any) => ({
+      id: item.id,
+      semantic_key: item.semantic_key,
+      selector: item.operation.selector,
+      operations: item.operation.operations,
+      legacy_operation: item.operation.legacy_operation ? summarizeLegacyOperation(item.operation.legacy_operation) : undefined,
+      patch_target_ids: item.patch_target_ids,
+      patch_target_count: item.patch_target_count,
+      patch_part_paths: item.patch_part_paths
+    })),
+    {
+      includePatchMetadata: true,
+      includeStandaloneItems: false
+    }
+  );
+}
+
+function summarizeWritePlan(items: any[]) {
+  return groupTemplatePlanItems(
+    items.map((item: any) =>
+      item.legacy_operation || item.intent
+        ? {
+            id: item.id,
+            semantic_key: item.semantic_key,
+            selector: item.selector,
+            operations: item.operations,
+            legacy_operation: item.legacy_operation
+              ? summarizeLegacyOperation(item.legacy_operation)
+              : summarizeWriteIntent(item.intent),
+            patch_target_ids: item.legacy_operation?.patchTargetIds ?? item.intent?.target?.patchTargetIds ?? [],
+            patch_target_count: (item.legacy_operation?.patchTargetIds ?? item.intent?.target?.patchTargetIds ?? []).length,
+            patch_part_paths: item.legacy_operation?.patchPartPaths ?? item.intent?.target?.patchPartPaths ?? []
+          }
+        : {
+            id: item.id,
+            semantic_key: item.semantic_key,
+            selector: item.selector,
+            operations: item.operations,
+            patch_target_ids: [],
+            patch_target_count: 0,
+            patch_part_paths: []
+          }
+    ),
+    {
+      includePatchMetadata: false,
+      includeStandaloneItems: true
+    }
+  );
+}
+
+function groupTemplatePlanItems(
+  items: any[],
+  options: {
+    includePatchMetadata: boolean;
+    includeStandaloneItems: boolean;
+  }
+) {
+  const grouped: any[] = [];
+  const selectorGroups = new Map<string, any>();
+  for (const item of items) {
+    if (!item.selector) {
+      if (!options.includeStandaloneItems) {
+        continue;
+      }
+      const { patch_target_ids, patch_target_count, patch_part_paths, operations, selector, ...rest } = item;
+      grouped.push(rest);
+      continue;
+    }
+    const key = `${item.semantic_key}:${JSON.stringify(item.selector)}`;
+    const existing = selectorGroups.get(key);
+    if (!existing) {
+      const created = {
+        id: `${item.semantic_key}:${item.selector.part}:${item.selector.scope}`,
+        semantic_key: item.semantic_key,
+        selector: item.selector,
+        operations: mergeTemplateOperations([], item.operations ?? [])
+      };
+      if (options.includePatchMetadata) {
+        created.legacy_operation = undefined;
+        created.patch_target_ids = [...deriveSelectorPatchTargetIds(item.selector, item.patch_target_ids ?? [])];
+        created.patch_part_paths = [...new Set(item.patch_part_paths ?? [])];
+      }
+      selectorGroups.set(key, created);
+      grouped.push(created);
+      continue;
+    }
+    existing.operations = mergeTemplateOperations(existing.operations, item.operations ?? []);
+    if (options.includePatchMetadata) {
+      existing.patch_part_paths = [...new Set([...(existing.patch_part_paths ?? []), ...(item.patch_part_paths ?? [])])];
+    }
+  }
+  if (options.includePatchMetadata) {
+    for (const value of grouped.filter((entry) => entry.selector)) {
+      value.patch_target_count = value.patch_target_ids.length;
+    }
+  }
+  return grouped;
+}
+
+function mergeTemplateOperations(existing: any[], incoming: any[]) {
+  const merged = [...existing];
+  for (const operation of incoming) {
+    const last = merged[merged.length - 1];
+    if (!last) {
+      merged.push(operation);
+      continue;
+    }
+    if (operation?.type === "set_run_style" && last.type === "set_run_style") {
+      last.text_style = { ...(last.text_style ?? {}), ...(operation.text_style ?? {}) };
+      continue;
+    }
+    if (operation?.type === "set_paragraph_style" && last.type === "set_paragraph_style") {
+      const currentKeys = Object.keys(operation.paragraph_style ?? {});
+      const lastKeys = Object.keys(last.paragraph_style ?? {});
+      const canMerge =
+        currentKeys.length > 0 &&
+        lastKeys.length > 0 &&
+        currentKeys.every((key) => key === "line_spacing" || key === "paragraph_alignment") &&
+        lastKeys.every((key) => key === "line_spacing" || key === "paragraph_alignment");
+      if (canMerge) {
+        last.paragraph_style = { ...(last.paragraph_style ?? {}), ...(operation.paragraph_style ?? {}) };
+        continue;
+      }
+    }
+    merged.push(operation);
+  }
+  return merged;
+}
+
+function deriveSelectorPatchTargetIds(selector: any, fallback: string[]) {
+  const match = selector?.match ?? {};
+  if (selector?.scope === "paragraph" && Array.isArray(match.paragraph_ids)) {
+    return match.paragraph_ids.map((paragraphId: string) => `target:block:${paragraphId}`);
+  }
+  if (selector?.scope === "section") {
+    return [`target:${selector.part}:section:${typeof match.section_index === "number" ? match.section_index : 0}`];
+  }
+  if (selector?.scope === "style") {
+    return [`target:styles:style:${typeof match.style_id === "string" ? match.style_id : "style"}`];
+  }
+  if (selector?.scope === "numbering_level") {
+    return [
+      `target:numbering:${typeof match.num_id === "string" ? match.num_id : "0"}:${
+        typeof match.ilvl === "number" ? match.ilvl : 0
+      }`
+    ];
+  }
+  return fallback;
+}
+
+function countUniquePatchTargets(items: Array<{ patch_target_ids?: string[] }>) {
+  return new Set(items.flatMap((item) => item.patch_target_ids ?? [])).size;
+}
+
+function describeWritePlanItem(item: any): string {
+  if (item.legacy_operation) {
+    return item.legacy_operation.type;
+  }
+  return (item.operations ?? []).map((operation: any) => operation.type).join("+");
+}
 
 describe("template config", () => {
   it("loads a valid template file and preserves template metadata", async () => {
@@ -2248,19 +2499,46 @@ describe("template validation and planning", () => {
 
     expect(validation.passed).toBe(true);
     expect(validation.issues).toEqual([]);
-    expect(executionPlan).toEqual([
+    expect(summarizeExecutionPlan(executionPlan)).toEqual([
       {
         semantic_key: "title",
         paragraph_ids: ["p1"],
-        text_style: baseTemplate.operation_blocks[0].text_style,
-        paragraph_style: baseTemplate.operation_blocks[0].paragraph_style
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p1"]
+          }
+        },
+        operations: legacyBlockToOperations(baseTemplate.operation_blocks[0]),
+        source_block: {
+          semantic_key: "title",
+          selector: {
+            part: "document",
+            scope: "paragraph"
+          },
+          operations: legacyBlockToOperations(baseTemplate.operation_blocks[0])
+        }
       },
       {
         semantic_key: "body",
         paragraph_ids: ["p2", "p3"],
-        text_style: baseTemplate.operation_blocks[1].text_style,
-        paragraph_style: baseTemplate.operation_blocks[1].paragraph_style,
-        relative_spacing: baseTemplate.operation_blocks[1].relative_spacing
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2", "p3"]
+          }
+        },
+        operations: legacyBlockToOperations(baseTemplate.operation_blocks[1]),
+        source_block: {
+          semantic_key: "body",
+          selector: {
+            part: "document",
+            scope: "paragraph"
+          },
+          operations: legacyBlockToOperations(baseTemplate.operation_blocks[1])
+        }
       }
     ]);
   });
@@ -2275,7 +2553,7 @@ describe("template validation and planning", () => {
         id: "official_doc_atomic_with_derived",
         name: "公文原子与派生语义模板",
         version: "1.0.0",
-        schema_version: "1.0"
+        schema_version: "2.0"
       },
       semantic_blocks: [
         {
@@ -2497,7 +2775,7 @@ describe("template validation and planning", () => {
       template: derivedTemplate as any,
       classification
     });
-    const writePlan = buildTemplateWritePlan({
+    const patchPlan = buildTemplateWritePlan({
       template: derivedTemplate as any,
       executionPlan,
       document: context.document,
@@ -2516,73 +2794,113 @@ describe("template validation and planning", () => {
         })
       ])
     );
-    expect(executionPlan).toEqual([
+    expect(summarizeExecutionPlan(executionPlan)).toEqual([
       {
         semantic_key: "document_title",
         paragraph_ids: ["p1"],
-        text_style: derivedTemplate.operation_blocks[0].text_style,
-        paragraph_style: derivedTemplate.operation_blocks[0].paragraph_style
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p1"]
+          }
+        },
+        operations: legacyBlockToOperations(derivedTemplate.operation_blocks[0]),
+        source_block: {
+          semantic_key: "document_title",
+          selector: {
+            part: "document",
+            scope: "paragraph"
+          },
+          operations: legacyBlockToOperations(derivedTemplate.operation_blocks[0])
+        }
       },
       {
         semantic_key: "body_content",
         paragraph_ids: ["p2", "p3"],
-        text_style: derivedTemplate.derived_semantics[0].operation.text_style,
-        paragraph_style: derivedTemplate.derived_semantics[0].operation.paragraph_style
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2", "p3"]
+          }
+        },
+        operations: derivedOperationToOperations(derivedTemplate.derived_semantics[0].operation),
+        source_block: undefined
       },
       {
         semantic_key: "copy_to_authority",
         paragraph_ids: ["p4"],
-        text_style: derivedTemplate.derived_semantics[1].operation.text_style,
-        paragraph_style: derivedTemplate.derived_semantics[1].operation.paragraph_style
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p4"]
+          }
+        },
+        operations: derivedOperationToOperations(derivedTemplate.derived_semantics[1].operation),
+        source_block: undefined
       }
     ]);
-    expect(writePlan.issues).toEqual([]);
-    expect(writePlan.writePlan.map((step) => ({
-      id: step.id,
-      type: step.type,
-      paragraphIds: step.targetSelector?.scope === "paragraph_ids" ? step.targetSelector.paragraphIds : undefined
-    }))).toEqual([
+    expect(patchPlan.issues).toEqual([]);
+    expect(summarizePatchPlan(patchPlan.patchPlan)).toEqual([
       {
-        id: "document_title:set_font",
-        type: "set_font",
-        paragraphIds: ["p1"]
+        id: "document_title:document:paragraph",
+        semantic_key: "document_title",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p1"]
+          }
+        },
+        operations: legacyBlockToOperations(derivedTemplate.operation_blocks[0]),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p1"],
+        patch_target_count: 1,
+        patch_part_paths: ["word/document.xml"]
       },
       {
-        id: "document_title:set_size",
-        type: "set_size",
-        paragraphIds: ["p1"]
+        id: "body_content:document:paragraph",
+        semantic_key: "body_content",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2", "p3"]
+          }
+        },
+        operations: derivedOperationToOperations(derivedTemplate.derived_semantics[0].operation),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p2", "target:block:p3"],
+        patch_target_count: 2,
+        patch_part_paths: ["word/document.xml"]
       },
       {
-        id: "document_title:set_alignment",
-        type: "set_alignment",
-        paragraphIds: ["p1"]
-      },
-      {
-        id: "body_content:set_font",
-        type: "set_font",
-        paragraphIds: ["p2", "p3"]
-      },
-      {
-        id: "body_content:set_size",
-        type: "set_size",
-        paragraphIds: ["p2", "p3"]
-      },
-      {
-        id: "body_content:set_alignment",
-        type: "set_alignment",
-        paragraphIds: ["p2", "p3"]
-      },
-      {
-        id: "copy_to_authority:set_font",
-        type: "set_font",
-        paragraphIds: ["p4"]
-      },
-      {
-        id: "copy_to_authority:set_alignment",
-        type: "set_alignment",
-        paragraphIds: ["p4"]
+        id: "copy_to_authority:document:paragraph",
+        semantic_key: "copy_to_authority",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p4"]
+          }
+        },
+        operations: derivedOperationToOperations(derivedTemplate.derived_semantics[1].operation),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p4"],
+        patch_target_count: 1,
+        patch_part_paths: ["word/document.xml"]
       }
     ]);
+    expect(summarizeWritePlan(patchPlan.writePlan)).toEqual(
+      summarizePatchPlan(patchPlan.patchPlan).map((item) => ({
+        id: item.id,
+        semantic_key: item.semantic_key,
+        selector: item.selector,
+        operations: item.operations
+      }))
+    );
   });
 
   it("normalizes unknown semantic diagnostics and absorbs blank_or_unknown fallback", async () => {
@@ -2908,12 +3226,26 @@ describe("template validation and planning", () => {
       }
     });
 
-    expect(executionPlan).toEqual([
+    expect(summarizeExecutionPlan(executionPlan)).toEqual([
       {
         semantic_key: "title",
         paragraph_ids: ["p1"],
-        text_style: baseTemplate.operation_blocks[0].text_style,
-        paragraph_style: baseTemplate.operation_blocks[0].paragraph_style
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p1"]
+          }
+        },
+        operations: legacyBlockToOperations(baseTemplate.operation_blocks[0]),
+        source_block: {
+          semantic_key: "title",
+          selector: {
+            part: "document",
+            scope: "paragraph"
+          },
+          operations: legacyBlockToOperations(baseTemplate.operation_blocks[0])
+        }
       }
     ]);
   });
@@ -4056,7 +4388,7 @@ describe("template validation and planning", () => {
 });
 
 describe("template runner", () => {
-  it("builds ordered write operations for supported template styles", async () => {
+  it("builds ordered patch plans for supported template styles", async () => {
     const { buildTemplateContextFromObservation } = await import("../src/templates/template-context-builder.js");
     const { buildTemplateWritePlan } = await import("../src/templates/template-write-planner.js");
     const context = buildTemplateContextFromObservation({
@@ -4087,31 +4419,296 @@ describe("template runner", () => {
     });
 
     expect(result.issues).toEqual([]);
-    expect(result.writePlan.map((item) => item.type)).toEqual([
-      "set_font",
-      "set_size",
+    expect(summarizePatchPlan(result.patchPlan)).toEqual([
+      {
+        id: "body:document:paragraph",
+        semantic_key: "body",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2", "p3"]
+          }
+        },
+        operations: [
+          {
+            type: "set_paragraph_style",
+            paragraph_style: {
+              line_spacing: 1.5,
+              paragraph_alignment: "justify"
+            }
+          },
+          {
+            type: "set_run_style",
+            text_style: {
+              font_name: "FangSong_GB2312",
+              font_size_pt: 16,
+              font_color: "#112233",
+              is_bold: true,
+              is_italic: false
+            }
+          }
+        ],
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p2", "target:block:p3"],
+        patch_target_count: 2,
+        patch_part_paths: ["word/document.xml"]
+      }
+    ]);
+    expect(summarizeWritePlan(result.writePlan)).toEqual([
+      {
+        id: "body:document:paragraph",
+        semantic_key: "body",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2", "p3"]
+          }
+        },
+        operations: [
+          {
+            type: "set_paragraph_style",
+            paragraph_style: {
+              line_spacing: 1.5,
+              paragraph_alignment: "justify"
+            }
+          },
+          {
+            type: "set_run_style",
+            text_style: {
+              font_name: "FangSong_GB2312",
+              font_size_pt: 16,
+              font_color: "#112233",
+              is_bold: true,
+              is_italic: false
+            }
+          }
+        ]
+      }
+    ]);
+  });
+
+  it("builds real write_operation entries for supported template styles", async () => {
+    const { buildTemplateContextFromObservation } = await import("../src/templates/template-context-builder.js");
+    const { buildTemplateWritePlan } = await import("../src/templates/template-write-planner.js");
+    const context = buildTemplateContextFromObservation({
+      docxPath: "D:/docs/sample.docx",
+      observation: baseObservation
+    });
+
+    const result = buildTemplateWritePlan({
+      executionPlan: [
+        {
+          semantic_key: "body",
+          paragraph_ids: ["p2", "p3"],
+          text_style: {
+            font_name: "FangSong_GB2312",
+            font_size_pt: 16,
+            font_color: "#112233",
+            is_bold: true,
+            is_italic: false
+          },
+          paragraph_style: {
+            line_spacing: 1.5,
+            paragraph_alignment: "justify"
+          }
+        }
+      ],
+      document: context.document,
+      structureIndex: context.structureIndex
+    });
+
+    expect(result.issues).toEqual([]);
+    expect(result.writePlan.every((item) => item.intent)).toBe(true);
+    expect(result.writePlan.map((item) => item.intent?.type)).toEqual([
       "set_line_spacing",
       "set_alignment",
+      "set_font",
+      "set_size",
       "set_font_color",
       "set_bold",
       "set_italic"
     ]);
-    expect(result.writePlan.every((item) => item.targetSelector?.scope === "paragraph_ids")).toBe(true);
-    expect(result.writePlan.every((item) => item.targetNodeId === undefined)).toBe(true);
-    expect(result.writePlan.every((item) => item.targetNodeIds === undefined)).toBe(true);
-    expect(result.writePlan[0]).toMatchObject({
-      id: "body:set_font",
-      payload: {
-        font_name: "FangSong_GB2312"
-      },
-      targetSelector: {
-        scope: "paragraph_ids",
-        paragraphIds: ["p2", "p3"]
-      }
-    });
+    expect(result.writePlan.map((item) => item.intent?.target)).toEqual([
+      { kind: "paragraph_ids", paragraphIds: ["p2", "p3"] },
+      { kind: "paragraph_ids", paragraphIds: ["p2", "p3"] },
+      { kind: "paragraph_ids", paragraphIds: ["p2", "p3"] },
+      { kind: "paragraph_ids", paragraphIds: ["p2", "p3"] },
+      { kind: "paragraph_ids", paragraphIds: ["p2", "p3"] },
+      { kind: "paragraph_ids", paragraphIds: ["p2", "p3"] },
+      { kind: "paragraph_ids", paragraphIds: ["p2", "p3"] }
+    ]);
+    expect(result.patchPlan.map((item) => item.patch_target_ids)).toEqual([
+      ["target:block:p2", "target:block:p3"],
+      ["target:block:p2", "target:block:p3"],
+      ["target:inline:p2_r1", "target:inline:p3_r1"],
+      ["target:inline:p2_r1", "target:inline:p3_r1"],
+      ["target:inline:p2_r1", "target:inline:p3_r1"],
+      ["target:inline:p2_r1", "target:inline:p3_r1"],
+      ["target:inline:p2_r1", "target:inline:p3_r1"]
+    ]);
   });
 
-  it("generates page, spacing, and first-line indent operations for supported template styles", async () => {
+  it("mirrors bound legacy operations alongside intents in template write plans", async () => {
+    const { buildTemplateContextFromObservation } = await import("../src/templates/template-context-builder.js");
+    const { buildTemplateWritePlan } = await import("../src/templates/template-write-planner.js");
+    const { bindWriteIntentToOperations } = await import("../src/document-execution/unified-write-pipeline.js");
+    const context = buildTemplateContextFromObservation({
+      docxPath: "D:/docs/sample.docx",
+      observation: baseObservation
+    });
+
+    const result = buildTemplateWritePlan({
+      executionPlan: [
+        {
+          semantic_key: "body",
+          paragraph_ids: ["p2", "p3"],
+          text_style: {
+            font_name: "FangSong_GB2312",
+            font_size_pt: 16,
+            font_color: "#112233"
+          },
+          paragraph_style: {
+            line_spacing: 1.5,
+            paragraph_alignment: "justify"
+          }
+        }
+      ],
+      document: context.document,
+      structureIndex: context.structureIndex
+    });
+
+    expect(result.issues).toEqual([]);
+    expect(result.writePlan.every((item) => item.intent && item.legacy_operation)).toBe(true);
+    expect(result.writePlan.map((item) => item.legacy_operation)).toEqual(
+      result.writePlan.map((item) => bindWriteIntentToOperations(context.document, item.intent!)[0])
+    );
+  });
+
+  it("keeps template write planning executable when only part of a semantic block is unwritable", async () => {
+    const { buildTemplateWritePlan } = await import("../src/templates/template-write-planner.js");
+    const result = buildTemplateWritePlan({
+      executionPlan: [
+        {
+          semantic_key: "body",
+          paragraph_ids: ["p1", "p2"],
+          text_style: {
+            font_name: "FangSong_GB2312"
+          },
+          paragraph_style: {
+            paragraph_alignment: "justify"
+          }
+        }
+      ],
+      document: {
+        id: "template:missing-runs",
+        version: "v1",
+        nodes: [{ id: "p1_r1", text: "标题" }],
+        metadata: {
+          structureIndex: {
+            paragraphs: [
+              { id: "p1", text: "标题", role: "body", runNodeIds: ["p1_r1"] },
+              { id: "p2", text: "空正文段", role: "body", runNodeIds: ["p2_r_missing"] }
+            ],
+            roleCounts: { body: 2 },
+            paragraphMap: {}
+          }
+        }
+      },
+      structureIndex: {
+        paragraphs: [
+          {
+            id: "p1",
+            text: "标题",
+            role: "body",
+            runNodeIds: ["p1_r1"],
+            inTable: false
+          },
+          {
+            id: "p2",
+            text: "空正文段",
+            role: "body",
+            runNodeIds: ["p2_r_missing"],
+            inTable: false
+          }
+        ],
+        roleCounts: { body: 2 },
+        paragraphMap: {} as any
+      }
+    });
+
+    expect(result.issues).toEqual([]);
+    expect(result.writePlan.length).toBeGreaterThan(0);
+    expect(result.writePlan.every((item) => item.intent?.target.kind === "paragraph_ids")).toBe(true);
+    expect(
+      result.writePlan.every(
+        (item) =>
+          item.intent?.target.kind === "paragraph_ids" &&
+          item.intent.target.paragraphIds.length === 1 &&
+          item.intent.target.paragraphIds[0] === "p1"
+      )
+    ).toBe(true);
+  });
+
+  it("treats fully unwritable template semantic blocks as empty matches instead of hard failures", async () => {
+    const { buildTemplateWritePlan } = await import("../src/templates/template-write-planner.js");
+    const result = buildTemplateWritePlan({
+      executionPlan: [
+        {
+          semantic_key: "body",
+          paragraph_ids: ["p2"],
+          text_style: {
+            font_name: "FangSong_GB2312"
+          },
+          paragraph_style: {
+            paragraph_alignment: "justify"
+          }
+        }
+      ],
+      document: {
+        id: "template:missing-runs",
+        version: "v1",
+        nodes: [{ id: "p1_r1", text: "标题" }],
+        metadata: {
+          structureIndex: {
+            paragraphs: [
+              { id: "p1", text: "标题", role: "heading", runNodeIds: ["p1_r1"] },
+              { id: "p2", text: "空正文段", role: "body", runNodeIds: ["p2_r_missing"] }
+            ],
+            roleCounts: { heading: 1, body: 1 },
+            paragraphMap: {}
+          }
+        }
+      },
+      structureIndex: {
+        paragraphs: [
+          {
+            id: "p1",
+            text: "标题",
+            role: "heading",
+            runNodeIds: ["p1_r1"],
+            inTable: false
+          },
+          {
+            id: "p2",
+            text: "空正文段",
+            role: "body",
+            runNodeIds: ["p2_r_missing"],
+            inTable: false
+          }
+        ],
+        roleCounts: { heading: 1, body: 1 },
+        paragraphMap: {} as any
+      }
+    });
+
+    expect(result.writePlan).toEqual([]);
+    expect(result.patchPlan).toEqual([]);
+    expect(result.issues).toEqual([]);
+  });
+
+  it("compiles page, spacing, and first-line indent rules into patch plans while ignoring draft-only page metadata", async () => {
     const { buildTemplateContextFromObservation } = await import("../src/templates/template-context-builder.js");
     const { buildTemplateWritePlan } = await import("../src/templates/template-write-planner.js");
     const context = buildTemplateContextFromObservation({
@@ -4138,7 +4735,13 @@ describe("template runner", () => {
             margin_top_cm: 3.7,
             margin_bottom_cm: 3.5,
             margin_left_cm: 2.8,
-            margin_right_cm: 2.6
+            margin_right_cm: 2.6,
+            header_distance_cm: 1.5,
+            footer_distance_cm: 2.8,
+            page_number_layout: {
+              mirror_outside: true,
+              format_example: "-5-"
+            }
           }
         }
       } as any,
@@ -4163,36 +4766,88 @@ describe("template runner", () => {
     });
 
     expect(result.issues).toEqual([]);
-    expect(result.writePlan.map((item) => item.type)).toEqual([
-      "set_page_layout",
-      "set_size",
-      "set_paragraph_spacing",
-      "set_paragraph_indent"
+    expect(summarizePatchPlan(result.patchPlan)).toEqual([
+      {
+        id: "body:document:paragraph",
+        semantic_key: "body",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2"]
+          }
+        },
+        operations: [
+          {
+            type: "set_paragraph_style",
+            paragraph_style: {
+              first_line_indent_chars: 2
+            }
+          },
+          {
+            type: "set_run_style",
+            text_style: {
+              font_size_pt: 15
+            }
+          },
+          {
+            type: "set_paragraph_style",
+            paragraph_style: {
+              space_before_pt: 6
+            }
+          },
+          {
+            type: "set_paragraph_style",
+            paragraph_style: {
+              space_after_pt: 3
+            }
+          }
+        ],
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p2"],
+        patch_target_count: 1,
+        patch_part_paths: ["word/document.xml"]
+      }
     ]);
-    expect(result.writePlan[0]).toMatchObject({
-      id: "template:set_page_layout",
-      payload: {
-        paper_size: "A4",
-        margin_top_cm: 3.7,
-        margin_bottom_cm: 3.5,
-        margin_left_cm: 2.8,
-        margin_right_cm: 2.6
+    expect(summarizeWritePlan(result.writePlan)).toEqual([
+      {
+        id: "body:document:paragraph",
+        semantic_key: "body",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2"]
+          }
+        },
+        operations: [
+          {
+            type: "set_paragraph_style",
+            paragraph_style: {
+              first_line_indent_chars: 2
+            }
+          },
+          {
+            type: "set_run_style",
+            text_style: {
+              font_size_pt: 15
+            }
+          },
+          {
+            type: "set_paragraph_style",
+            paragraph_style: {
+              space_before_pt: 6
+            }
+          },
+          {
+            type: "set_paragraph_style",
+            paragraph_style: {
+              space_after_pt: 3
+            }
+          }
+        ]
       }
-    });
-    expect(result.writePlan[0]?.targetSelector).toBeUndefined();
-    expect(result.writePlan[2]).toMatchObject({
-      id: "body:set_paragraph_spacing",
-      payload: {
-        space_before_pt: 6,
-        space_after_pt: 3
-      }
-    });
-    expect(result.writePlan[3]).toMatchObject({
-      id: "body:set_paragraph_indent",
-      payload: {
-        first_line_indent_pt: 30
-      }
-    });
+    ]);
   });
 
   it("fails write plan generation when unsupported template fields are declared", async () => {
@@ -4227,6 +4882,7 @@ describe("template runner", () => {
       structureIndex: context.structureIndex
     });
 
+    expect(result.patchPlan).toEqual([]);
     expect(result.writePlan).toEqual([]);
     expect(result.issues).toEqual(
       expect.arrayContaining([
@@ -4241,7 +4897,7 @@ describe("template runner", () => {
     );
   });
 
-  it("splits mixed-language runs and appends run-level font overrides after paragraph planning", async () => {
+  it("splits mixed-language runs and appends run-level font overrides after paragraph planning and patch compilation", async () => {
     const { buildTemplateContextFromObservation } = await import("../src/templates/template-context-builder.js");
     const { buildTemplateWritePlan } = await import("../src/templates/template-write-planner.js");
     const context = buildTemplateContextFromObservation({
@@ -4319,65 +4975,91 @@ describe("template runner", () => {
       "p2_r1__seg_3",
       "p2_r1__seg_4"
     ]);
-    expect(result.writePlan.map((item) => ({
-      id: item.id,
-      type: item.type,
-      targetSelector: item.targetSelector,
-      targetNodeIds: item.targetNodeIds,
-      payload: item.payload
-    }))).toEqual([
+    expect(summarizePatchPlan(result.patchPlan)).toEqual([
       {
-        id: "body:set_font",
-        type: "set_font",
-        targetSelector: {
-          scope: "paragraph_ids",
-          paragraphIds: ["p2"]
+        id: "body:document:paragraph",
+        semantic_key: "body",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2"]
+          }
         },
-        targetNodeIds: undefined,
-        payload: {
-          font_name: "FangSong_GB2312"
-        }
-      },
+        operations: [
+          {
+            type: "set_paragraph_style",
+            paragraph_style: {
+              paragraph_alignment: "justify"
+            }
+          },
+          {
+            type: "set_run_style",
+            text_style: {
+              font_name: "FangSong_GB2312",
+              font_size_pt: 16
+            }
+          }
+        ],
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p2"],
+        patch_target_count: 1,
+        patch_part_paths: ["word/document.xml"]
+      }
+    ]);
+    expect(summarizeWritePlan(result.writePlan)).toEqual([
       {
-        id: "body:set_size",
-        type: "set_size",
-        targetSelector: {
-          scope: "paragraph_ids",
-          paragraphIds: ["p2"]
+        id: "body:document:paragraph",
+        semantic_key: "body",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2"]
+          }
         },
-        targetNodeIds: undefined,
-        payload: {
-          font_size_pt: 16
-        }
-      },
-      {
-        id: "body:set_alignment",
-        type: "set_alignment",
-        targetSelector: {
-          scope: "paragraph_ids",
-          paragraphIds: ["p2"]
-        },
-        targetNodeIds: undefined,
-        payload: {
-          paragraph_alignment: "justify"
-        }
+        operations: [
+          {
+            type: "set_paragraph_style",
+            paragraph_style: {
+              paragraph_alignment: "justify"
+            }
+          },
+          {
+            type: "set_run_style",
+            text_style: {
+              font_name: "FangSong_GB2312",
+              font_size_pt: 16
+            }
+          }
+        ]
       },
       {
         id: "body:language_font:zh",
-        type: "set_font",
-        targetSelector: undefined,
-        targetNodeIds: ["p2_r1__seg_0", "p2_r1__seg_2", "p2_r1__seg_4"],
-        payload: {
-          font_name: "FangSong_GB2312"
+        semantic_key: "body",
+        legacy_operation: {
+          id: "body:language_font:zh",
+          type: "set_font",
+          targetSelector: undefined,
+          targetNodeIds: undefined,
+          patchTargetIds: ["target:inline:p2_r1__seg_0", "target:inline:p2_r1__seg_2", "target:inline:p2_r1__seg_4"],
+          payload: {
+            font_name: "FangSong_GB2312"
+          }
         }
       },
       {
         id: "body:language_font:en",
-        type: "set_font",
-        targetSelector: undefined,
-        targetNodeIds: ["p2_r1__seg_1", "p2_r1__seg_3"],
-        payload: {
-          font_name: "Times New Roman"
+        semantic_key: "body",
+        legacy_operation: {
+          id: "body:language_font:en",
+          type: "set_font",
+          targetSelector: undefined,
+          targetNodeIds: undefined,
+          patchTargetIds: ["target:inline:p2_r1__seg_1", "target:inline:p2_r1__seg_3"],
+          payload: {
+            font_name: "Times New Roman"
+          }
         }
       }
     ]);
@@ -4459,7 +5141,7 @@ describe("template runner", () => {
           changeSummary: `${writePlan.length} change(s) applied`,
           artifacts: {
             executed_step_count: writePlan.length,
-            step_summaries: writePlan.map((item) => `Applied ${item.type}`),
+            step_summaries: writePlan.map((item) => `Applied ${describeWritePlanItem(item)}`),
             change_set_summary: {
               change_count: writePlan.length,
               rolled_back: false
@@ -4487,33 +5169,67 @@ describe("template runner", () => {
     );
     expect(report.validation_result.passed).toBe(true);
     expect(report.execution_plan).toHaveLength(2);
-    expect(report.write_plan.map((item) => item.type)).toEqual([
-      "set_font",
-      "set_size",
-      "set_alignment",
-      "set_bold",
-      "set_font",
-      "set_size",
-      "set_line_spacing",
-      "set_alignment",
-      "set_font_color"
+    expect(summarizePatchPlan(report.patch_plan)).toEqual([
+      {
+        id: "title:document:paragraph",
+        semantic_key: "title",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p1"]
+          }
+        },
+        operations: legacyBlockToOperations(executableTemplate.operation_blocks[0]),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p1"],
+        patch_target_count: 1,
+        patch_part_paths: ["word/document.xml"]
+      },
+      {
+        id: "body:document:paragraph",
+        semantic_key: "body",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2", "p3"]
+          }
+        },
+        operations: legacyBlockToOperations(executableTemplate.operation_blocks[1]),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p2", "target:block:p3"],
+        patch_target_count: 2,
+        patch_part_paths: ["word/document.xml"]
+      }
     ]);
+    expect(summarizeWritePlan(report.write_plan)).toEqual(
+      summarizePatchPlan(report.patch_plan).map((item) => ({
+        id: item.id,
+        semantic_key: item.semantic_key,
+        selector: item.selector,
+        operations: item.operations
+      }))
+    );
     expect(report.execution_result.applied).toBe(true);
     expect(path.normalize(report.execution_result.output_docx_path ?? "")).toBe(
       path.normalize("D:/docs/sample.template-output.docx")
     );
     expect(report.execution_result.change_summary).toBe(
-      `9 change(s) applied\nMaterialized document to ${path.normalize("D:/docs/sample.template-output.docx")}.`
+      `${report.write_plan.length} change(s) applied\nMaterialized document to ${path.normalize("D:/docs/sample.template-output.docx")}.`
     );
     expect(report.execution_result.artifacts).toEqual(
       expect.objectContaining({
-        write_operation_count: 9,
-        executed_step_count: 9,
+        patch_set_count: report.patch_plan.length,
+        patch_target_count: countUniquePatchTargets(report.patch_plan),
+        patch_part_paths: ["word/document.xml"],
+        write_operation_count: report.write_plan.length,
+        executed_step_count: report.write_plan.length,
         materialized: true,
         output_docx_path: path.normalize("D:/docs/sample.template-output.docx"),
         step_summaries: expect.any(Array),
         change_set_summary: expect.objectContaining({
-          change_count: 9,
+          change_count: report.write_plan.length,
           rolled_back: false
         }),
         materialize_artifacts_summary: expect.objectContaining({
@@ -4521,6 +5237,225 @@ describe("template runner", () => {
         })
       })
     );
+  });
+
+  it("keeps custom executeWritePlan hooks compatible through legacy_operation snapshots", async () => {
+    const { runTemplatePipeline } = await import("../src/templates/template-runner.js");
+    const dir = await makeTempDir();
+    const templatePath = path.join(dir, "template.json");
+    await writeFile(templatePath, JSON.stringify(baseTemplate, null, 2), "utf8");
+
+    let consumedLegacyTypes: string[] = [];
+    const report = await runTemplatePipeline(
+      {
+        docxPath: "D:/docs/sample.docx",
+        templatePath
+      },
+      {
+        observeDocx: async () => baseObservation,
+        classifyParagraphs: async () => ({
+          template_id: "official_doc_body",
+          matches: [
+            {
+              semantic_key: "title",
+              paragraph_ids: ["p1"],
+              confidence: 0.99,
+              reason: "标题"
+            },
+            {
+              semantic_key: "body",
+              paragraph_ids: ["p2", "p3"],
+              confidence: 0.92,
+              reason: "正文"
+            }
+          ],
+          unmatched_paragraph_ids: [],
+          conflicts: [],
+          overall_confidence: 0.95
+        }),
+        executeWritePlan: async ({ context, writePlan, outputDocxPath }) => {
+          consumedLegacyTypes = writePlan.map((item) => item.legacy_operation?.type ?? "missing");
+          expect(writePlan.every((item) => item.legacy_operation)).toBe(true);
+          return {
+            applied: true,
+            finalDoc: {
+              ...context.document,
+              metadata: {
+                ...context.document.metadata,
+                inputDocxPath: "D:/docs/sample.docx",
+                outputDocxPath
+              }
+            },
+            changeSummary: consumedLegacyTypes.join(","),
+            artifacts: {
+              executed_step_count: writePlan.length
+            }
+          };
+        },
+        materializeDoc: async (doc) => ({
+          doc,
+          summary: "materialized"
+        })
+      }
+    );
+
+    expect(report.status).toBe("executed");
+    expect(consumedLegacyTypes).toEqual(report.write_plan.map((item) => item.legacy_operation?.type));
+    expect(report.execution_result.change_summary).toContain(consumedLegacyTypes[0] ?? "");
+  });
+
+  it("keeps materializeDoc-only overrides on the unified execution branch", async () => {
+    const { runTemplatePipeline } = await import("../src/templates/template-runner.js");
+    const { createDocumentToolingFacade } = await import("../src/document-tooling/facade.js");
+    const dir = await makeTempDir();
+    const templatePath = path.join(dir, "template.json");
+    await writeFile(templatePath, JSON.stringify(baseTemplate, null, 2), "utf8");
+
+    let writeToolExecutions = 0;
+    const toolingFacade = createDocumentToolingFacade({
+      writeOperationToolFactory: () => ({
+        name: "write_operation",
+        readOnly: false,
+        validate: async () => {},
+        execute: async (input) => {
+          writeToolExecutions += 1;
+          return {
+            doc: structuredClone(input.doc),
+            summary: `Applied ${input.operation?.type ?? "write_operation"} via custom tool`
+          };
+        }
+      }),
+      materializeDocument: async () => {
+        throw new Error("expected injected materializeDoc override");
+      }
+    });
+
+    const report = await runTemplatePipeline(
+      {
+        docxPath: "D:/docs/sample.docx",
+        templatePath
+      },
+      {
+        toolingFacade,
+        observeDocx: async () => baseObservation,
+        classifyParagraphs: async () => ({
+          template_id: "official_doc_body",
+          matches: [
+            {
+              semantic_key: "title",
+              paragraph_ids: ["p1"],
+              confidence: 0.99,
+              reason: "标题"
+            },
+            {
+              semantic_key: "body",
+              paragraph_ids: ["p2", "p3"],
+              confidence: 0.92,
+              reason: "正文"
+            }
+          ],
+          unmatched_paragraph_ids: [],
+          conflicts: [],
+          overall_confidence: 0.95
+        }),
+        materializeDoc: async (doc) => ({
+          doc,
+          summary: "materialized via injected hook",
+          artifacts: {
+            outputDocxPath: doc.metadata?.outputDocxPath
+          }
+        })
+      }
+    );
+
+    expect(report.status).toBe("executed");
+    expect(writeToolExecutions).toBeGreaterThan(0);
+    expect(report.execution_result.change_summary).toContain("materialized via injected hook");
+  });
+
+  it("switches to the legacy execution branch when executeWritePlan is injected", async () => {
+    const { runTemplatePipeline } = await import("../src/templates/template-runner.js");
+    const { createDocumentToolingFacade } = await import("../src/document-tooling/facade.js");
+    const dir = await makeTempDir();
+    const templatePath = path.join(dir, "template.json");
+    await writeFile(templatePath, JSON.stringify(baseTemplate, null, 2), "utf8");
+
+    let writeToolExecutions = 0;
+    const toolingFacade = createDocumentToolingFacade({
+      writeOperationToolFactory: () => ({
+        name: "write_operation",
+        readOnly: false,
+        validate: async () => {},
+        execute: async (input) => {
+          writeToolExecutions += 1;
+          return {
+            doc: structuredClone(input.doc),
+            summary: `Applied ${input.operation?.type ?? "write_operation"} via custom tool`
+          };
+        }
+      }),
+      materializeDocument: async (doc) => ({
+        doc,
+        summary: "materialized via tooling facade"
+      })
+    });
+
+    let legacyHookCalls = 0;
+    const report = await runTemplatePipeline(
+      {
+        docxPath: "D:/docs/sample.docx",
+        templatePath
+      },
+      {
+        toolingFacade,
+        observeDocx: async () => baseObservation,
+        classifyParagraphs: async () => ({
+          template_id: "official_doc_body",
+          matches: [
+            {
+              semantic_key: "title",
+              paragraph_ids: ["p1"],
+              confidence: 0.99,
+              reason: "标题"
+            },
+            {
+              semantic_key: "body",
+              paragraph_ids: ["p2", "p3"],
+              confidence: 0.92,
+              reason: "正文"
+            }
+          ],
+          unmatched_paragraph_ids: [],
+          conflicts: [],
+          overall_confidence: 0.95
+        }),
+        executeWritePlan: async ({ context, writePlan, outputDocxPath }) => {
+          legacyHookCalls += 1;
+          expect(writePlan.every((item) => item.legacy_operation)).toBe(true);
+          return {
+            applied: true,
+            finalDoc: {
+              ...context.document,
+              metadata: {
+                ...context.document.metadata,
+                inputDocxPath: "D:/docs/sample.docx",
+                outputDocxPath
+              }
+            },
+            changeSummary: "legacy hook applied",
+            artifacts: {
+              executed_step_count: writePlan.length
+            }
+          };
+        }
+      }
+    );
+
+    expect(report.status).toBe("executed");
+    expect(legacyHookCalls).toBe(1);
+    expect(writeToolExecutions).toBe(0);
+    expect(report.execution_result.change_summary).toContain("legacy hook applied");
+    expect(report.execution_result.change_summary).toContain("materialized via tooling facade");
   });
 
   it("propagates refinement diagnostics and stage timings through the runner report", async () => {
@@ -4730,6 +5665,7 @@ describe("template runner", () => {
         reason: "元数据"
       }
     ]);
+    expect(report.patch_plan).toEqual([]);
     expect(report.write_plan).toEqual([]);
     expect(report.execution_result.applied).toBe(false);
     expect(report.validation_result.issues).toEqual(
@@ -4827,7 +5763,7 @@ describe("template runner", () => {
           changeSummary: `${writePlan.length} change(s) applied`,
           artifacts: {
             executed_step_count: writePlan.length,
-            step_summaries: writePlan.map((item) => `Applied ${item.type}`),
+            step_summaries: writePlan.map((item) => `Applied ${describeWritePlanItem(item)}`),
             change_set_summary: {
               change_count: writePlan.length,
               rolled_back: false
@@ -4846,8 +5782,11 @@ describe("template runner", () => {
     );
 
     expect(report.execution_result.artifacts).toEqual({
-      write_operation_count: 6,
-      executed_step_count: 6,
+      patch_set_count: report.patch_plan.length,
+      patch_target_count: countUniquePatchTargets(report.patch_plan),
+      patch_part_paths: ["word/document.xml"],
+      write_operation_count: report.write_plan.length,
+      executed_step_count: report.write_plan.length,
       materialized: true,
       output_docx_path: path.normalize("D:/docs/sample.template-output.docx")
     });
@@ -4931,6 +5870,7 @@ describe("template runner", () => {
 
     expect(report.status).toBe("failed");
     expect(writeExecuted).toBe(false);
+    expect(report.patch_plan).toEqual([]);
     expect(report.write_plan).toEqual([]);
     expect(report.execution_plan).toEqual([]);
     expect(report.validation_result.issues).toEqual(
@@ -5112,15 +6052,49 @@ describe("template runner", () => {
         })
       ])
     );
-    expect(report.write_plan.every((item) => !item.id.startsWith("blank_or_unknown:"))).toBe(true);
-    expect(report.write_plan.map((item) => item.type)).toEqual([
-      "set_font",
-      "set_size",
-      "set_alignment",
-      "set_font",
-      "set_size",
-      "set_alignment"
+    expect(report.patch_plan.every((item) => !item.id.startsWith("blank_or_unknown:"))).toBe(true);
+    expect(summarizePatchPlan(report.patch_plan)).toEqual([
+      {
+        id: "title:document:paragraph",
+        semantic_key: "title",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p1"]
+          }
+        },
+        operations: legacyBlockToOperations(baseTemplate.operation_blocks[0]),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p1"],
+        patch_target_count: 1,
+        patch_part_paths: ["word/document.xml"]
+      },
+      {
+        id: "body:document:paragraph",
+        semantic_key: "body",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2"]
+          }
+        },
+        operations: legacyBlockToOperations(fallbackTemplate.operation_blocks[1]),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p2"],
+        patch_target_count: 1,
+        patch_part_paths: ["word/document.xml"]
+      }
     ]);
+    expect(summarizeWritePlan(report.write_plan)).toEqual(
+      summarizePatchPlan(report.patch_plan).map((item) => ({
+        id: item.id,
+        semantic_key: item.semantic_key,
+        selector: item.selector,
+        operations: item.operations
+      }))
+    );
   });
 
   it("returns a failed report with write-plan issues and preserves the atomic execution plan", async () => {
@@ -5170,6 +6144,7 @@ describe("template runner", () => {
     expect(report.status).toBe("failed");
     expect(report.validation_result.passed).toBe(false);
     expect(report.execution_plan).toEqual([]);
+    expect(report.patch_plan).toEqual([]);
     expect(report.write_plan).toEqual([]);
     expect(report.execution_result.applied).toBe(false);
     expect(report.execution_result.change_summary).toBeUndefined();
@@ -5270,6 +6245,7 @@ describe("template runner", () => {
 
     expect(report.status).toBe("failed");
     expect(report.execution_plan).toHaveLength(2);
+    expect(report.patch_plan).toEqual([]);
     expect(report.write_plan).toEqual([]);
     expect(report.execution_result.applied).toBe(false);
     expect(report.execution_result.change_summary).toBeUndefined();
@@ -5285,7 +6261,7 @@ describe("template runner", () => {
     );
   });
 
-  it("preserves execution_plan and write_plan when write execution fails", async () => {
+  it("preserves execution_plan and patch_plan when patch execution fails", async () => {
     const { runTemplatePipeline } = await import("../src/templates/template-runner.js");
     const dir = await makeTempDir();
     const templatePath = path.join(dir, "template.json");
@@ -5355,14 +6331,48 @@ describe("template runner", () => {
 
     expect(report.status).toBe("failed");
     expect(report.execution_plan).toHaveLength(2);
-    expect(report.write_plan.map((item) => item.type)).toEqual([
-      "set_font",
-      "set_size",
-      "set_alignment",
-      "set_font",
-      "set_size",
-      "set_alignment"
+    expect(summarizePatchPlan(report.patch_plan)).toEqual([
+      {
+        id: "title:document:paragraph",
+        semantic_key: "title",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p1"]
+          }
+        },
+        operations: legacyBlockToOperations(executableTemplate.operation_blocks[0]),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p1"],
+        patch_target_count: 1,
+        patch_part_paths: ["word/document.xml"]
+      },
+      {
+        id: "body:document:paragraph",
+        semantic_key: "body",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2", "p3"]
+          }
+        },
+        operations: legacyBlockToOperations(executableTemplate.operation_blocks[1]),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p2", "target:block:p3"],
+        patch_target_count: 2,
+        patch_part_paths: ["word/document.xml"]
+      }
     ]);
+    expect(summarizeWritePlan(report.write_plan)).toEqual(
+      summarizePatchPlan(report.patch_plan).map((item) => ({
+        id: item.id,
+        semantic_key: item.semantic_key,
+        selector: item.selector,
+        operations: item.operations
+      }))
+    );
     expect(report.execution_result.applied).toBe(false);
     expect(report.execution_result.change_summary).toBeUndefined();
     expect(report.execution_result.output_docx_path).toBeUndefined();
@@ -5374,7 +6384,10 @@ describe("template runner", () => {
     ]);
     expect(report.execution_result.artifacts).toEqual(
       expect.objectContaining({
-        write_operation_count: 6,
+        patch_set_count: report.patch_plan.length,
+        patch_target_count: countUniquePatchTargets(report.patch_plan),
+        patch_part_paths: ["word/document.xml"],
+        write_operation_count: report.write_plan.length,
         executed_step_count: 0,
         materialized: false
       })
@@ -5481,8 +6494,17 @@ describe("template runner", () => {
 
     expect(report.status).toBe("executed");
     expect(report.execution_result.applied).toBe(true);
-    expect(report.write_plan.length).toBeGreaterThan(0);
+    expect(report.patch_plan.length).toBeGreaterThan(0);
+    expect(summarizeWritePlan(report.write_plan)).toEqual(
+      summarizePatchPlan(report.patch_plan).map((item) => ({
+        id: item.id,
+        semantic_key: item.semantic_key,
+        selector: item.selector,
+        operations: item.operations
+      }))
+    );
     expect(report.execution_result.output_docx_path).toBeTruthy();
+    expect(report.execution_result.artifacts?.patch_set_count).toBe(report.patch_plan.length);
     expect(report.execution_result.artifacts?.write_operation_count).toBe(report.write_plan.length);
 
     const outputDocxPath = report.execution_result.output_docx_path!;
@@ -5491,7 +6513,7 @@ describe("template runner", () => {
     expect(content.byteLength).toBeGreaterThan(0);
   });
 
-  it("fails without output path when materialize fails after execution and keeps write_plan", async () => {
+  it("fails without output path when materialize fails after execution and keeps patch_plan", async () => {
     const { runTemplatePipeline } = await import("../src/templates/template-runner.js");
     const dir = await makeTempDir();
     const templatePath = path.join(dir, "template.json");
@@ -5564,7 +6586,7 @@ describe("template runner", () => {
           changeSummary: `${writePlan.length} change(s) applied`,
           artifacts: {
             executed_step_count: writePlan.length,
-            step_summaries: writePlan.map((item) => `Applied ${item.type}`),
+            step_summaries: writePlan.map((item) => `Applied ${describeWritePlanItem(item)}`),
             change_set_summary: {
               change_count: writePlan.length,
               rolled_back: false
@@ -5583,17 +6605,51 @@ describe("template runner", () => {
 
     expect(report.status).toBe("failed");
     expect(report.execution_plan).toHaveLength(2);
-    expect(report.write_plan.map((item) => item.type)).toEqual([
-      "set_font",
-      "set_size",
-      "set_alignment",
-      "set_font",
-      "set_size",
-      "set_alignment"
+    expect(summarizePatchPlan(report.patch_plan)).toEqual([
+      {
+        id: "title:document:paragraph",
+        semantic_key: "title",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p1"]
+          }
+        },
+        operations: legacyBlockToOperations(executableTemplate.operation_blocks[0]),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p1"],
+        patch_target_count: 1,
+        patch_part_paths: ["word/document.xml"]
+      },
+      {
+        id: "body:document:paragraph",
+        semantic_key: "body",
+        selector: {
+          part: "document",
+          scope: "paragraph",
+          match: {
+            paragraph_ids: ["p2", "p3"]
+          }
+        },
+        operations: legacyBlockToOperations(executableTemplate.operation_blocks[1]),
+        legacy_operation: undefined,
+        patch_target_ids: ["target:block:p2", "target:block:p3"],
+        patch_target_count: 2,
+        patch_part_paths: ["word/document.xml"]
+      }
     ]);
+    expect(summarizeWritePlan(report.write_plan)).toEqual(
+      summarizePatchPlan(report.patch_plan).map((item) => ({
+        id: item.id,
+        semantic_key: item.semantic_key,
+        selector: item.selector,
+        operations: item.operations
+      }))
+    );
     expect(report.execution_result.applied).toBe(false);
     expect(report.execution_result.output_docx_path).toBeUndefined();
-    expect(report.execution_result.change_summary).toBe("6 change(s) applied");
+    expect(report.execution_result.change_summary).toBe(`${report.write_plan.length} change(s) applied`);
     expect(report.execution_result.issues).toEqual([
       expect.objectContaining({
         error_code: "E_DOCX_WRITE_FAILED",
@@ -5602,19 +6658,15 @@ describe("template runner", () => {
     ]);
     expect(report.execution_result.artifacts).toEqual(
       expect.objectContaining({
-        write_operation_count: 6,
-        executed_step_count: 6,
+        patch_set_count: report.patch_plan.length,
+        patch_target_count: countUniquePatchTargets(report.patch_plan),
+        patch_part_paths: ["word/document.xml"],
+        write_operation_count: report.write_plan.length,
+        executed_step_count: report.write_plan.length,
         materialized: false,
-        step_summaries: [
-          "Applied set_font",
-          "Applied set_size",
-          "Applied set_alignment",
-          "Applied set_font",
-          "Applied set_size",
-          "Applied set_alignment"
-        ],
+        step_summaries: report.write_plan.map((item) => `Applied ${describeWritePlanItem(item)}`),
         change_set_summary: expect.objectContaining({
-          change_count: 6,
+          change_count: report.write_plan.length,
           rolled_back: false
         })
       })

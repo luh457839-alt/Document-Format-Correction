@@ -7,7 +7,7 @@ const validContract = {
     id: "official_doc_body",
     name: "公文正文模板",
     version: "1.0.0",
-    schema_version: "1.0",
+    schema_version: "2.0",
     locale: "zh-CN"
   },
   semantic_blocks: [
@@ -108,6 +108,109 @@ const validContract = {
   }
 };
 
+const validPatchContract = {
+  template_meta: {
+    id: "official_doc_body_patch",
+    name: "公文正文模板 Patch DSL",
+    version: "2.0.0",
+    schema_version: "2.0",
+    locale: "zh-CN"
+  },
+  semantic_blocks: [
+    {
+      key: "title",
+      label: "标题",
+      description: "位于正文前部的公文主标题。",
+      examples: ["关于开展年度检查工作的通知"],
+      required: true,
+      multiple: false
+    },
+    {
+      key: "body",
+      label: "正文",
+      description: "公文主体内容。",
+      examples: ["现将有关事项通知如下。"],
+      required: true,
+      multiple: true
+    }
+  ],
+  layout_rules: {
+    global_rules: {
+      document_scope: "full_document",
+      ordering: ["title", "body"],
+      allow_unclassified_paragraphs: false
+    },
+    semantic_rules: [
+      {
+        semantic_key: "title",
+        position_hints: ["near_top"]
+      },
+      {
+        semantic_key: "body",
+        text_hints: ["现将", "通知如下"]
+      }
+    ]
+  },
+  patch_blocks: [
+    {
+      semantic_key: "title",
+      selector: {
+        part: "document",
+        scope: "paragraph"
+      },
+      operations: [
+        {
+          type: "set_paragraph_style",
+          style_id: "Title"
+        },
+        {
+          type: "set_run_style",
+          text_style: {
+            font_name: "FZXiaoBiaoSong-B05S",
+            font_size_pt: 22
+          }
+        }
+      ]
+    },
+    {
+      semantic_key: "body",
+      selector: {
+        part: "document",
+        scope: "paragraph"
+      },
+      operations: [
+        {
+          type: "set_paragraph_style",
+          style_id: "BodyText"
+        },
+        {
+          type: "set_run_style",
+          text_style: {
+            font_name: "FangSong_GB2312",
+            font_size_pt: 16
+          }
+        }
+      ]
+    }
+  ],
+  classification_contract: {
+    scope: "paragraph",
+    single_owner_per_paragraph: true,
+    matches: [],
+    unmatched_paragraph_ids: [],
+    conflicts: [],
+    overall_confidence: 0.98
+  },
+  validation_policy: {
+    enforce_validation: true,
+    min_confidence: 0.8,
+    require_all_required_semantics: true,
+    reject_conflicting_matches: true,
+    reject_order_violations: true,
+    reject_style_violations: true
+  }
+};
+
 describe("template contract", () => {
   it("accepts a valid contract and preserves unknown fields", async () => {
     const { parseTemplateContract } = await import("../src/templates/template-contract.js");
@@ -118,6 +221,38 @@ describe("template contract", () => {
     expect(parsed.semantic_blocks[0]?.notes).toBe("扩展字段允许透传");
     expect(parsed.layout_rules.global_rules.custom_hint).toBe("keep");
     expect(parsed.vendor_metadata).toEqual({ passthrough: true });
+  });
+
+  it("accepts schema 2.0 contracts backed by patch_blocks", async () => {
+    const { parseTemplateContract } = await import("../src/templates/template-contract.js");
+
+    const parsed = parseTemplateContract(validPatchContract);
+
+    expect(parsed.template_meta.schema_version).toBe("2.0");
+    expect(parsed.patch_blocks).toHaveLength(2);
+    expect(parsed.patch_blocks[0]?.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "set_paragraph_style", style_id: "Title" }),
+        expect.objectContaining({
+          type: "set_run_style",
+          text_style: expect.objectContaining({ font_name: "FZXiaoBiaoSong-B05S" })
+        })
+      ])
+    );
+  });
+
+  it("rejects legacy 1.0 operation_blocks-only contracts", async () => {
+    const { parseTemplateContract } = await import("../src/templates/template-contract.js");
+
+    expect(() =>
+      parseTemplateContract({
+        ...validContract,
+        template_meta: {
+          ...validContract.template_meta,
+          schema_version: "1.0"
+        }
+      })
+    ).toThrow(/schema_version/i);
   });
 
   it("rejects missing required core fields", async () => {
@@ -312,7 +447,7 @@ describe("template contract", () => {
       ...validContract,
       template_meta: {
         ...validContract.template_meta,
-        schema_version: "2.0"
+        schema_version: "3.0"
       }
     };
 
@@ -372,21 +507,23 @@ describe("template contract", () => {
     expect(() => parseTemplateContract(missingOperation)).toThrow(/derived_semantics.*operation/i);
   });
 
-  it("parses the structural sample contract from docs/examples", async () => {
+  it("parses the official-style fixed template draft from docs/examples", async () => {
     const { parseTemplateContract } = await import("../src/templates/template-contract.js");
     const samplePath = new URL("../../../docs/examples/fixed-template-contract.sample.json", import.meta.url);
     const sample = JSON.parse(await readFile(samplePath, "utf8")) as Record<string, unknown>;
 
     const parsed = parseTemplateContract(sample);
     const semanticKeys = parsed.semantic_blocks.map((block) => block.key);
-    const operationKeys = parsed.operation_blocks.map((block) => block.semantic_key);
+    const patchKeys = parsed.patch_blocks.map((block) => block.semantic_key);
     const derivedKeys = parsed.derived_semantics?.map((block) => block.key);
     const documentTitle = parsed.semantic_blocks.find((block) => block.key === "document_title");
     const documentTitleRule = parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "document_title");
     const bodyParagraph = parsed.semantic_blocks.find((block) => block.key === "body_paragraph");
     const bodyParagraphRule = parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "body_paragraph");
+    const pageLayoutPatch = parsed.patch_blocks.find((block) => block.semantic_key === "document_page_layout");
+    const pageReference = (parsed.style_reference?.page ?? {}) as Record<string, unknown>;
 
-    expect(parsed.template_meta.id).toBe("fixed_template_structural_sample");
+    expect(parsed.template_meta.id).toBe("official_document_fixed_template_patchdsl_sample");
     expect(semanticKeys).toEqual([
       "cover_image",
       "document_title",
@@ -400,7 +537,19 @@ describe("template contract", () => {
       "blank_or_unknown"
     ]);
     expect(derivedKeys).toEqual(["body_content", "copy_to_authority"]);
-    expect(operationKeys).toEqual(semanticKeys);
+    expect(patchKeys).toEqual([
+      "document_page_layout",
+      "cover_image",
+      "document_title",
+      "heading_level_1",
+      "heading_level_2",
+      "heading_level_3",
+      "body_paragraph",
+      "list_item_level_0",
+      "list_item_level_1",
+      "table_text"
+    ]);
+    expect(parsed.operation_blocks).toBeUndefined();
     expect(parsed.layout_rules.global_rules.allow_unclassified_paragraphs).toBe(false);
     expect(parsed.validation_policy.enforce_validation).toBe(false);
     expect(parsed.validation_policy.require_all_required_semantics).toBe(false);
@@ -411,16 +560,16 @@ describe("template contract", () => {
     expect(parsed.authoring_guidance).toMatchObject({
       coverage_contract: {
         required_atomic_semantics: semanticKeys
-      },
-      inheritance_mechanism: {
-        aggregate: expect.any(Object),
-        refine: expect.any(Object)
       }
     });
     expect(documentTitle?.required).toBe(false);
     expect(documentTitleRule?.occurrence).toMatchObject({
       min_occurs: 0,
       max_occurs: 1
+    });
+    expect(parsed.semantic_blocks.find((block) => block.key === "cover_image")).toMatchObject({
+      required: false,
+      multiple: true
     });
     expect(bodyParagraph?.required).toBe(true);
     expect(bodyParagraphRule?.occurrence).toMatchObject({
@@ -432,18 +581,60 @@ describe("template contract", () => {
     expect(bodyParagraphRule?.style_hints).toMatchObject({
       allow_empty_text: true
     });
-    expect(parsed.layout_rules.global_rules.numbering_patterns).toEqual([
-      "^[一二三四五六七八九十]+、$",
-      "^（[一二三四五六七八九十]+）$",
-      "^\\d+[.)．、]$",
-      "^[(（]\\d+[)）]$"
-    ]);
+    expect(parsed.layout_rules.global_rules.numbering_patterns).toEqual(
+      expect.arrayContaining(["^[一二三四五六七八九十]+、$", "^（[一二三四五六七八九十]+）$"])
+    );
     expect(parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "heading_level_1")?.numbering_patterns).toBeUndefined();
     expect(parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "heading_level_2")?.numbering_patterns).toBeUndefined();
     expect(parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "heading_level_3")?.numbering_patterns).toBeUndefined();
     expect(parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "body_paragraph")?.numbering_patterns).toEqual([
       "^\\d+\\.\\d+(?:\\.\\d+)*[)）、．。、]?$"
     ]);
+    expect(pageReference).toMatchObject({
+      paper_size: "A4",
+      margin_top_cm: 2.5,
+      margin_bottom_cm: 2,
+      margin_left_cm: 2.8,
+      margin_right_cm: 2.6
+    });
+    expect(pageLayoutPatch).toMatchObject({
+      selector: {
+        part: "document",
+        scope: "section",
+        match: {
+          section_index: 0
+        }
+      },
+      operations: [
+        {
+          type: "set_section_layout",
+          section_layout: expect.objectContaining({
+            paper_size: "A4",
+            margin_top_cm: 2.5
+          })
+        }
+      ]
+    });
+    expect(parsed.runtime_notes).toMatchObject({
+      patch_blocks_supported_selectors: expect.arrayContaining([
+        "document/paragraph",
+        "document/section",
+        "styles/style"
+      ]),
+      patch_blocks_supported_aliases: expect.arrayContaining([
+        "set_run_style",
+        "set_paragraph_style",
+        "set_section_layout"
+      ]),
+      compatibility_notes: expect.arrayContaining([
+        expect.stringContaining("patch_blocks"),
+        expect.stringContaining("language_font_overrides")
+      ]),
+      notes: expect.arrayContaining([
+        expect.stringContaining("section selector"),
+        expect.stringContaining("blank_or_unknown")
+      ])
+    });
   });
 
   it("keeps templates/test_1.json as a pure-format, non-validating template", async () => {
@@ -454,7 +645,8 @@ describe("template contract", () => {
     const parsed = parseTemplateContract(template);
     const semanticKeys = parsed.semantic_blocks.map((block) => block.key);
     const blankRule = parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "blank_or_unknown");
-    const blankOperation = parsed.operation_blocks.find((block) => block.semantic_key === "blank_or_unknown");
+    const pageLayoutPatch = parsed.patch_blocks.find((block) => block.semantic_key === "document_page_layout");
+    const bodyPatch = parsed.patch_blocks.find((block) => block.semantic_key === "body_paragraph");
     const documentTitle = parsed.semantic_blocks.find((block) => block.key === "document_title");
     const documentTitleRule = parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "document_title");
     const bodyParagraph = parsed.semantic_blocks.find((block) => block.key === "body_paragraph");
@@ -511,10 +703,42 @@ describe("template contract", () => {
     expect(parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "heading_level_2")?.numbering_patterns).toBeUndefined();
     expect(parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "heading_level_3")?.numbering_patterns).toBeUndefined();
     expect(parsed.layout_rules.semantic_rules.find((rule) => rule.semantic_key === "body_paragraph")?.numbering_patterns).toBeUndefined();
-    expect(blankOperation).toEqual({
-      semantic_key: "blank_or_unknown",
-      text_style: {},
-      paragraph_style: {}
+    expect(parsed.operation_blocks).toBeUndefined();
+    expect(pageLayoutPatch).toMatchObject({
+      selector: {
+        part: "document",
+        scope: "section"
+      },
+      operations: [
+        {
+          type: "set_section_layout",
+          section_layout: expect.objectContaining({
+            paper_size: "A4",
+            margin_top_cm: 2.5
+          })
+        }
+      ]
+    });
+    expect(bodyPatch).toMatchObject({
+      selector: {
+        part: "document",
+        scope: "paragraph"
+      },
+      operations: expect.arrayContaining([
+        expect.objectContaining({
+          type: "set_paragraph_style",
+          paragraph_style: expect.objectContaining({
+            first_line_indent_chars: 2
+          })
+        }),
+        expect.objectContaining({
+          type: "set_run_style",
+          text_style: expect.objectContaining({
+            font_name: "SimSun",
+            font_size_pt: 12
+          })
+        })
+      ])
     });
   });
 
@@ -528,9 +752,14 @@ describe("template contract", () => {
     expect(guide).toContain("默认不做格式性校验");
     expect(guide).toContain("默认允许空文本");
     expect(guide).toContain("用户上传任何格式的文档都允许通过");
-    expect(guide).toContain("只有用户明确要求时");
-    expect(guide).toContain("`numbering_patterns` 不参与 paragraph owner 决策");
-    expect(guide).toContain("`heading_level_n` 表示 DOCX 原生标题层级");
+    expect(guide).toContain("只有用户明确要求严格模式时");
+    expect(guide).toContain("`patch_blocks`");
+    expect(guide).toContain("`selector`");
+    expect(guide).toContain("`operations`");
+    expect(guide).toContain("`document / section`");
+    expect(guide).toContain("`set_section_layout`");
+    expect(guide).toContain("`style_reference`");
+    expect(guide).toContain("`language_font_overrides`");
     expect(guide).toContain("语义集合主要用于分类、写入映射和未来可选校验");
     expect(guide).toContain("`examples` / `negative_examples`");
   });

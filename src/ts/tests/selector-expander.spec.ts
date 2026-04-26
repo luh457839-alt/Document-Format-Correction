@@ -64,6 +64,12 @@ describe("selector expander", () => {
     expect(expanded.steps).toHaveLength(1);
     expect(expanded.steps[0]?.operation?.targetNodeId).toBeUndefined();
     expect(expanded.steps[0]?.operation?.targetNodeIds).toEqual(["p_1_r_0", "p_1_r_1", "p_2_r_0"]);
+    expect(expanded.steps[0]?.operation?.patchTargetIds).toEqual([
+      "target:inline:p_1_r_0",
+      "target:inline:p_1_r_1",
+      "target:inline:p_2_r_0"
+    ]);
+    expect(expanded.steps[0]?.operation?.patchPartPaths).toEqual(["word/document.xml"]);
     expect(expanded.steps[0]?.operation?.targetSelector).toBeUndefined();
     expect(expanded.steps[0]?.operation?.sourceTargetSelector?.scope).toBe("body");
   });

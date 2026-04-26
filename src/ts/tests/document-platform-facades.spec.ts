@@ -13,7 +13,51 @@ const baseDoc: DocumentIR = {
 describe("document platform facades", () => {
   it("delegates observe/materialize and tool factories through DocumentToolingFacade", async () => {
     const observation = {
+      package_model: {
+        package_meta: {
+          part_count: 1,
+          xml_part_count: 1,
+          media_count: 0,
+          relationship_count: 0,
+          section_count: 1,
+          header_count: 0,
+          footer_count: 0,
+          footnote_count: 0,
+          endnote_count: 0,
+          custom_xml_count: 0,
+          warnings: []
+        },
+        parts: [],
+        relationship_graph: {
+          edges: [],
+          by_source: {}
+        }
+      },
+      package_meta: {
+        part_count: 1,
+        xml_part_count: 1,
+        media_count: 0,
+        relationship_count: 0,
+        section_count: 1,
+        header_count: 0,
+        footer_count: 0,
+        footnote_count: 0,
+        endnote_count: 0,
+        custom_xml_count: 0,
+        warnings: []
+      },
       document_meta: { total_paragraphs: 1, total_tables: 0 },
+      blocks: [],
+      inline_nodes: [],
+      styles: {
+        defaults: {},
+        paragraph_styles: {},
+        character_styles: {},
+        table_styles: {}
+      },
+      numbering: { instances: [] },
+      structure_index: { paragraphs: [], role_counts: {} },
+      patch_targets: [],
       nodes: []
     };
     const materialized = {
@@ -52,18 +96,56 @@ describe("document platform facades", () => {
     expect(materializeDocument).toHaveBeenCalledWith(baseDoc, undefined);
   });
 
-  it("falls back to native observation for docx parse startup failures and keeps tool behavior aligned", async () => {
+  it("uses native observation as the default package parser and keeps tool behavior aligned", async () => {
     const observation = {
+      package_model: {
+        package_meta: {
+          part_count: 1,
+          xml_part_count: 1,
+          media_count: 0,
+          relationship_count: 0,
+          section_count: 1,
+          header_count: 0,
+          footer_count: 0,
+          footnote_count: 0,
+          endnote_count: 0,
+          custom_xml_count: 0,
+          warnings: []
+        },
+        parts: [],
+        relationship_graph: {
+          edges: [],
+          by_source: {}
+        }
+      },
+      package_meta: {
+        part_count: 1,
+        xml_part_count: 1,
+        media_count: 0,
+        relationship_count: 0,
+        section_count: 1,
+        header_count: 0,
+        footer_count: 0,
+        footnote_count: 0,
+        endnote_count: 0,
+        custom_xml_count: 0,
+        warnings: []
+      },
       document_meta: { total_paragraphs: 1, total_tables: 0 },
+      blocks: [],
+      inline_nodes: [],
+      styles: {
+        defaults: {},
+        paragraph_styles: {},
+        character_styles: {},
+        table_styles: {}
+      },
+      numbering: { instances: [] },
+      structure_index: { paragraphs: [], role_counts: {} },
+      patch_targets: [],
       nodes: []
     };
-    const pythonObserveDocument = vi.fn(async () => {
-      throw new AgentError({
-        code: "E_PYTHON_TOOL_START_FAILED",
-        message: "python-docx failed to open DOCX package: Package not found at D:/docs/sample.docx",
-        retryable: false
-      });
-    });
+    const pythonObserveDocument = vi.fn(async () => observation);
     const nativeObserveDocument = vi.fn(async () => observation);
 
     const { createDocumentToolingFacade } = await import("../src/document-tooling/facade.js");
@@ -73,7 +155,7 @@ describe("document platform facades", () => {
     });
 
     await expect(facade.observeDocument("D:/docs/sample.docx")).resolves.toEqual(observation);
-    expect(pythonObserveDocument).toHaveBeenCalledWith("D:/docs/sample.docx", undefined);
+    expect(pythonObserveDocument).not.toHaveBeenCalled();
     expect(nativeObserveDocument).toHaveBeenCalledWith("D:/docs/sample.docx");
 
     const tool = facade.createDocxObservationTool();
@@ -98,8 +180,8 @@ describe("document platform facades", () => {
     expect(nativeObserveDocument).toHaveBeenCalledTimes(2);
   });
 
-  it("preserves hard runner environment failures during observation", async () => {
-    const pythonObserveDocument = vi.fn(async () => {
+  it("preserves explicit observation override failures", async () => {
+    const observeDocument = vi.fn(async () => {
       throw new AgentError({
         code: "E_PYTHON_TOOL_START_FAILED",
         message: "Python tool runner environment failed: ModuleNotFoundError: No module named 'src'",
@@ -113,7 +195,7 @@ describe("document platform facades", () => {
 
     const { createDocumentToolingFacade } = await import("../src/document-tooling/facade.js");
     const facade = createDocumentToolingFacade({
-      pythonObserveDocument,
+      observeDocument,
       nativeObserveDocument
     });
 
@@ -123,6 +205,7 @@ describe("document platform facades", () => {
       }
     } satisfies Partial<AgentError>);
     expect(nativeObserveDocument).not.toHaveBeenCalled();
+    expect(observeDocument).toHaveBeenCalledWith("D:/docs/sample.docx", undefined);
   });
 
   it("executes plan and write plan through DocumentExecutionFacade", async () => {
@@ -161,5 +244,54 @@ describe("document platform facades", () => {
     });
     expect(writePlanResult.status).toBe("completed");
     expect(writePlanResult.finalDoc.nodes[0]?.style?.font_name).toBe("KaiTi");
+  });
+
+  it("keeps explicit patch targets stable when executing legacy write plans", async () => {
+    const { createDocumentExecutionFacade } = await import("../src/document-execution/facade.js");
+    const { createDocumentToolingFacade } = await import("../src/document-tooling/facade.js");
+    const registry = new InMemoryToolRegistry();
+    registry.register(createDocumentToolingFacade().createWriteOperationTool());
+    const facade = createDocumentExecutionFacade({ toolRegistry: registry });
+
+    const legacyPatchOperation: Operation = {
+      id: "style-body",
+      type: "set_style_definition",
+      targetNodeIds: ["n1"],
+      patchTargetIds: ["target:styles:style:BodyText"],
+      patchPartPaths: ["word/styles.xml"],
+      payload: {
+        style_definition: {
+          "w:name": "BodyText"
+        }
+      }
+    };
+
+    const writePlanResult = await facade.executeWritePlan(
+      [legacyPatchOperation],
+      {
+        ...baseDoc,
+        metadata: {
+          inputDocxPath: "D:/docs/sample.docx",
+          outputDocxPath: "D:/docs/sample.out.docx"
+        }
+      },
+      {
+        taskId: "task-3",
+        goal: "preserve explicit patch target"
+      }
+    );
+
+    expect(writePlanResult.status).toBe("completed");
+    const patchHistory = writePlanResult.finalDoc.metadata?.docxPatchHistory as
+      | Array<{ targets?: Array<{ id: string; part_path: string }> }>
+      | undefined;
+    expect(patchHistory?.[0]?.targets).toEqual([
+      expect.objectContaining({
+        id: "target:styles:style:BodyText",
+        target_kind: "style",
+        part_path: "word/styles.xml",
+        block_id: "BodyText"
+      })
+    ]);
   });
 });

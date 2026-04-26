@@ -15,12 +15,19 @@ import {
   asCompatibleModelRequestError,
   isSchemaUnsupported
 } from "../llm/openai-compatible-client.js";
+import {
+  resolveChatModelConfig as resolveSharedChatModelConfig,
+  resolvePlannerModelConfig as resolveSharedPlannerModelConfig,
+  resolvePlannerRuntimeMode as resolveSharedPlannerRuntimeMode,
+  resolvePlannerRuntimeTuning as resolveSharedPlannerRuntimeTuning
+} from "../model-gateway/config.js";
 import { resolveRequestTimeoutControl } from "../llm/request-timeout-control.js";
 import {
   buildSemanticSelectorGuidance,
   sanitizePromptMetadata,
   summarizeStructureForPrompt as summarizeStructureForPromptContext
 } from "./prompt-context.js";
+import { analyzeSelectorTargets } from "../document-execution/unified-write-pipeline.js";
 import { normalizeWriteOperationPayload } from "../tools/style-operation.js";
 
 const OPERATION_TYPES: ReadonlySet<OperationType> = new Set([
@@ -38,6 +45,15 @@ const OPERATION_TYPES: ReadonlySet<OperationType> = new Set([
   "set_page_layout",
   "set_paragraph_spacing",
   "set_paragraph_indent",
+  "set_style_definition",
+  "set_numbering_level",
+  "set_settings_flag",
+  "set_attr",
+  "remove_attr",
+  "set_text",
+  "remove_node",
+  "ensure_node",
+  "replace_node_xml",
   "merge_paragraph",
   "split_paragraph"
 ]);
@@ -63,8 +79,6 @@ const PLAN_REPAIR_SYSTEM_PROMPT =
 const MAX_PROMPT_NODES = 50;
 const MAX_PROMPT_NODE_IDS = 200;
 const MAX_NODE_TEXT_PREVIEW = 160;
-const DEFAULT_REMOTE_TIMEOUT_MS = 30000;
-const DEFAULT_LOCAL_TIMEOUT_MS = 90000;
 
 export interface LlmPlannerDeps {
   config?: Partial<PlannerModelConfig>;
@@ -76,123 +90,14 @@ export function resolveChatModelConfig(
   override: Partial<ChatModelConfig> = {},
   env: NodeJS.ProcessEnv = process.env
 ): ChatModelConfig {
-  const apiKey = pickString(override.apiKey, env.TS_AGENT_CHAT_API_KEY, env.OPENAI_API_KEY);
-  const baseUrl = pickString(
-    override.baseUrl,
-    env.TS_AGENT_CHAT_BASE_URL,
-    env.OPENAI_BASE_URL,
-    "http://localhost:8080/v1"
-  );
-  const model = pickString(override.model, env.TS_AGENT_CHAT_MODEL, env.OPENAI_MODEL, "gpt-4o-mini");
-  const preferLocalCompat = isLikelyLocalModelBackend(baseUrl, model);
-  const timeoutMs = pickNumber(
-    override.timeoutMs,
-    env.TS_AGENT_CHAT_TIMEOUT_MS,
-    preferLocalCompat ? DEFAULT_LOCAL_TIMEOUT_MS : DEFAULT_REMOTE_TIMEOUT_MS
-  );
-  const maxRetries = pickNumber(override.maxRetries, env.TS_AGENT_CHAT_MAX_RETRIES, 0);
-  const temperature = pickNumber(override.temperature, env.TS_AGENT_CHAT_TEMPERATURE, 0);
-
-  if (!apiKey) {
-    throw new AgentError({
-      code: "E_CHAT_CONFIG_MISSING",
-      message: "LLM chat apiKey is missing. Set TS_AGENT_CHAT_API_KEY or OPENAI_API_KEY.",
-      retryable: false
-    });
-  }
-  if (!baseUrl) {
-    throw new AgentError({
-      code: "E_CHAT_CONFIG_MISSING",
-      message: "LLM chat baseUrl is missing.",
-      retryable: false
-    });
-  }
-  if (!model) {
-    throw new AgentError({
-      code: "E_CHAT_CONFIG_MISSING",
-      message: "LLM chat model is missing.",
-      retryable: false
-    });
-  }
-
-  return {
-    apiKey,
-    baseUrl,
-    model,
-    timeoutMs,
-    maxRetries,
-    temperature
-  };
+  return resolveSharedChatModelConfig(override, env);
 }
 
 export function resolvePlannerModelConfig(
   override: Partial<PlannerModelConfig> = {},
   env: NodeJS.ProcessEnv = process.env
 ): PlannerModelConfig {
-  const apiKey = pickString(override.apiKey, env.TS_AGENT_PLANNER_API_KEY, env.OPENAI_API_KEY);
-  const baseUrl = pickString(
-    override.baseUrl,
-    env.TS_AGENT_PLANNER_BASE_URL,
-    env.OPENAI_BASE_URL,
-    "http://localhost:8080/v1"
-  );
-  const model = pickString(override.model, env.TS_AGENT_PLANNER_MODEL, env.OPENAI_MODEL, "gpt-4o-mini");
-  const compatMode = resolvePlannerCompatMode(override, env);
-  const runtimeMode = resolvePlannerRuntimeMode({ ...override, baseUrl, model, compatMode }, env);
-  const preferLocalCompat = compatMode !== "strict" && isLikelyLocalModelBackend(baseUrl, model);
-  const timeoutMs = pickNumber(
-    override.timeoutMs,
-    env.TS_AGENT_PLANNER_TIMEOUT_MS,
-    preferLocalCompat ? DEFAULT_LOCAL_TIMEOUT_MS : DEFAULT_REMOTE_TIMEOUT_MS
-  );
-  const maxRetries = pickNumber(override.maxRetries, env.TS_AGENT_PLANNER_MAX_RETRIES, 0);
-  const temperature = pickNumber(override.temperature, env.TS_AGENT_PLANNER_TEMPERATURE, 0);
-  const useJsonSchema = pickBoolean(
-    override.useJsonSchema,
-    env.TS_AGENT_PLANNER_USE_JSON_SCHEMA,
-    preferLocalCompat ? false : true
-  );
-  const schemaStrict = pickBoolean(
-    override.schemaStrict,
-    env.TS_AGENT_PLANNER_SCHEMA_STRICT,
-    useJsonSchema === false ? false : true
-  );
-
-  if (!apiKey) {
-    throw new AgentError({
-      code: "E_PLANNER_CONFIG_MISSING",
-      message: "LLM planner apiKey is missing. Set TS_AGENT_PLANNER_API_KEY or OPENAI_API_KEY.",
-      retryable: false
-    });
-  }
-  if (!baseUrl) {
-    throw new AgentError({
-      code: "E_PLANNER_CONFIG_MISSING",
-      message: "LLM planner baseUrl is missing.",
-      retryable: false
-    });
-  }
-  if (!model) {
-    throw new AgentError({
-      code: "E_PLANNER_CONFIG_MISSING",
-      message: "LLM planner model is missing.",
-      retryable: false
-    });
-  }
-
-  return {
-    apiKey,
-    baseUrl,
-    model,
-    timeoutMs,
-    ...resolvePlannerRuntimeTuning(override, env),
-    maxRetries,
-    temperature,
-    useJsonSchema,
-    schemaStrict,
-    compatMode,
-    runtimeMode
-  };
+  return resolveSharedPlannerModelConfig(override, env);
 }
 
 export function resolvePlannerRuntimeTuning(
@@ -202,39 +107,14 @@ export function resolvePlannerRuntimeTuning(
   PlannerModelConfig,
   "stepTimeoutMs" | "taskTimeoutMs" | "pythonToolTimeoutMs" | "maxTurns" | "syncRequestTimeoutMs"
 > {
-  return {
-    stepTimeoutMs: pickNumber(override.stepTimeoutMs, env.TS_AGENT_STEP_TIMEOUT_MS, 60000),
-    taskTimeoutMs: pickOptionalNumber(override.taskTimeoutMs, env.TS_AGENT_TASK_TIMEOUT_MS),
-    pythonToolTimeoutMs: pickOptionalNumber(
-      override.pythonToolTimeoutMs,
-      env.TS_AGENT_PYTHON_TOOL_TIMEOUT_MS
-    ),
-    maxTurns: pickNumber(override.maxTurns, env.TS_AGENT_MAX_TURNS, 24),
-    syncRequestTimeoutMs: pickNumber(
-      override.syncRequestTimeoutMs,
-      env.TS_AGENT_SYNC_REQUEST_TIMEOUT_MS,
-      300000
-    )
-  };
+  return resolveSharedPlannerRuntimeTuning(override, env);
 }
 
 export function resolvePlannerRuntimeMode(
   override: Partial<PlannerModelConfig> = {},
   env: NodeJS.ProcessEnv = process.env
 ): "plan_once" | "react_loop" {
-  const explicitMode = pickRuntimeMode(override.runtimeMode, env.TS_AGENT_PLANNER_RUNTIME_MODE);
-  if (explicitMode) {
-    return explicitMode;
-  }
-  const baseUrl = pickString(
-    override.baseUrl,
-    env.TS_AGENT_PLANNER_BASE_URL,
-    env.OPENAI_BASE_URL,
-    "http://localhost:8080/v1"
-  );
-  const model = pickString(override.model, env.TS_AGENT_PLANNER_MODEL, env.OPENAI_MODEL, "gpt-4o-mini");
-  const compatMode = resolvePlannerCompatMode(override, env);
-  return compatMode !== "strict" && isLikelyLocalModelBackend(baseUrl, model) ? "plan_once" : "react_loop";
+  return resolveSharedPlannerRuntimeMode(override, env);
 }
 
 export class LlmPlanner implements Planner {
@@ -347,6 +227,15 @@ function buildPrompt(goal: string, doc: DocumentIR): string {
           },
           set_paragraph_spacing: { before_pt: "number >= 0", after_pt: "number >= 0" },
           set_paragraph_indent: { first_line_indent_pt: "number >= 0" },
+          set_style_definition: { style_definition: "object" },
+          set_numbering_level: { numbering_level: "object" },
+          set_settings_flag: { settings: "object" },
+          set_attr: { name: "string", value: "unknown", path: "string?" },
+          remove_attr: { name: "string", path: "string?" },
+          set_text: { value: "string", path: "string?" },
+          remove_node: { path: "string?" },
+          ensure_node: { path: "string", xml_tag: "string", attrs: "record<string,string>?" },
+          replace_node_xml: { node_xml: "string", path: "string?" },
           merge_paragraph: {},
           split_paragraph: { split_offset: "positive integer" }
         },
@@ -445,6 +334,15 @@ function buildRepairPrompt(
           },
           set_paragraph_spacing: { before_pt: "number >= 0", after_pt: "number >= 0" },
           set_paragraph_indent: { first_line_indent_pt: "number >= 0" },
+          set_style_definition: { style_definition: "object" },
+          set_numbering_level: { numbering_level: "object" },
+          set_settings_flag: { settings: "object" },
+          set_attr: { name: "string", value: "unknown", path: "string?" },
+          remove_attr: { name: "string", path: "string?" },
+          set_text: { value: "string", path: "string?" },
+          remove_node: { path: "string?" },
+          ensure_node: { path: "string", xml_tag: "string", attrs: "record<string,string>?" },
+          replace_node_xml: { node_xml: "string", path: "string?" },
           merge_paragraph: {},
           split_paragraph: { split_offset: "positive integer" }
         },
@@ -793,6 +691,7 @@ function buildNodeSelectorJsonSchema(): Record<string, unknown> {
 }
 
 interface TargetContext {
+  doc: DocumentIR;
   nodeIds: Set<string>;
   paragraphIds: Set<string>;
   roleCounts: Record<string, number>;
@@ -818,6 +717,7 @@ function buildTargetContext(doc?: DocumentIR): TargetContext | undefined {
     }
   }
   return {
+    doc,
     nodeIds: new Set(doc.nodes.map((node) => node.id)),
     paragraphIds: new Set(
       paragraphs
@@ -846,6 +746,16 @@ function validateExecutableTarget(
     if (missing) {
       throw invalidStep(idx, `operation.targetSelector.paragraphIds must match existing paragraph ids: ${missing}`);
     }
+    const analysis = analyzeSelectorTargets(targetContext.doc, selector);
+    if (analysis.targetNodeIds.length === 0) {
+      if (analysis.matchedParagraphIds.length > 0 && analysis.skippedParagraphIds.length === analysis.matchedParagraphIds.length) {
+        throw invalidStep(
+          idx,
+          `operation.targetSelector.paragraphIds matched no writable targets after filtering: ${analysis.skippedParagraphIds.join(", ")}`
+        );
+      }
+      throw invalidStep(idx, `operation.targetSelector.paragraphIds matched no writable document nodes`);
+    }
     return;
   }
   if (selector.scope === "all_text") {
@@ -859,6 +769,19 @@ function validateExecutableTarget(
     throw invalidStep(
       idx,
       `operation.targetSelector.scope='${selector.scope}' does not bind to any real document range for ${operationType}`
+    );
+  }
+  const analysis = analyzeSelectorTargets(targetContext.doc, selector);
+  if (analysis.targetNodeIds.length === 0) {
+    if (analysis.matchedParagraphIds.length > 0 && analysis.skippedParagraphIds.length === analysis.matchedParagraphIds.length) {
+      throw invalidStep(
+        idx,
+        `operation.targetSelector.scope='${selector.scope}' matched no writable targets after filtering for ${operationType}`
+      );
+    }
+    throw invalidStep(
+      idx,
+      `operation.targetSelector.scope='${selector.scope}' matched no writable document nodes for ${operationType}`
     );
   }
 }
@@ -956,6 +879,24 @@ function validateExecutablePayload(idx: number, operationType: OperationType, pa
     !hasPositiveNumber(payload, ["first_line_indent_chars", "firstLineIndentChars"])
   ) {
     throw invalidStep(idx, "set_paragraph_indent payload must include first_line_indent_pt");
+  }
+  if (operationType === "set_style_definition" && !hasNonEmptyRecord(payload, ["style_definition", "styleDefinition"])) {
+    throw invalidStep(idx, "set_style_definition payload must include style_definition");
+  }
+  if (operationType === "set_numbering_level" && !hasNonEmptyRecord(payload, ["numbering_level", "numberingLevel"])) {
+    throw invalidStep(idx, "set_numbering_level payload must include numbering_level");
+  }
+  if (operationType === "set_settings_flag" && !hasNonEmptyRecord(payload, ["settings"])) {
+    throw invalidStep(idx, "set_settings_flag payload must include settings");
+  }
+  if ((operationType === "set_attr" || operationType === "remove_attr") && !hasNonEmptyString(payload, ["name"])) {
+    throw invalidStep(idx, `${operationType} payload must include name`);
+  }
+  if (operationType === "ensure_node" && (!hasNonEmptyString(payload, ["path"]) || !hasNonEmptyString(payload, ["xml_tag", "xmlTag"]))) {
+    throw invalidStep(idx, "ensure_node payload must include path and xml_tag");
+  }
+  if (operationType === "replace_node_xml" && !hasNonEmptyString(payload, ["node_xml", "nodeXml"])) {
+    throw invalidStep(idx, "replace_node_xml payload must include node_xml");
   }
 }
 
@@ -1150,6 +1091,27 @@ function isCanonicalPayload(operationType: OperationType, payload: Record<string
       hasPositiveNumber(payload, ["first_line_indent_chars", "firstLineIndentChars"])
     );
   }
+  if (operationType === "set_style_definition") {
+    return hasNonEmptyRecord(payload, ["style_definition", "styleDefinition"]);
+  }
+  if (operationType === "set_numbering_level") {
+    return hasNonEmptyRecord(payload, ["numbering_level", "numberingLevel"]);
+  }
+  if (operationType === "set_settings_flag") {
+    return hasNonEmptyRecord(payload, ["settings"]);
+  }
+  if (operationType === "set_attr" || operationType === "remove_attr") {
+    return hasNonEmptyString(payload, ["name"]);
+  }
+  if (operationType === "set_text" || operationType === "remove_node") {
+    return true;
+  }
+  if (operationType === "ensure_node") {
+    return hasNonEmptyString(payload, ["path"]) && hasNonEmptyString(payload, ["xml_tag", "xmlTag"]);
+  }
+  if (operationType === "replace_node_xml") {
+    return hasNonEmptyString(payload, ["node_xml", "nodeXml"]);
+  }
   return false;
 }
 
@@ -1167,6 +1129,13 @@ function hasNonNegativeNumber(payload: Record<string, unknown>, keys: string[]):
 
 function hasBoolean(payload: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => typeof payload[key] === "boolean");
+}
+
+function hasNonEmptyRecord(payload: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((key) => {
+    const value = payload[key];
+    return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0;
+  });
 }
 
 function hasValidLineSpacing(payload: Record<string, unknown>): boolean {

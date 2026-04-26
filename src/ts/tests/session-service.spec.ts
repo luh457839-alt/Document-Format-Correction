@@ -268,6 +268,60 @@ describe("AgentSessionService", () => {
     }
   });
 
+  it("does not block execute mode when the observation only contains empty structural paragraphs", async () => {
+    const dir = await makeTempDir();
+    const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });
+    const runtimeCalls: Array<{ goal: string; doc: DocumentIR }> = [];
+    const service = new AgentSessionService({
+      store,
+      modelGateway: {
+        decideTurn: async () => ({
+          ...baseTurnDecision,
+          mode: "execute",
+          goal: "尝试处理空段落文档",
+          requiresDocument: true
+        }),
+        respondToConversation: async () => "unused",
+        respondToDocumentObservation: async () => "unused",
+        respondToClarification: async () => "unused"
+      },
+      runtimeFactory: () => ({
+        run: async (goal: string, doc: DocumentIR) => {
+          runtimeCalls.push({ goal, doc });
+          return {
+            status: "completed",
+            finalDoc: doc,
+            changeSet: { taskId: "chat-main-task", changes: [], rolledBack: false },
+            steps: [],
+            summary: "执行完成"
+          } satisfies ExecutionResult;
+        }
+      }),
+      observeDocument: async () => ({
+        document_meta: { total_paragraphs: 1, total_tables: 0 },
+        paragraphs: [{ id: "p_1", text: "", role: "body", run_ids: ["p_1_r_missing"], in_table: false }],
+        nodes: [{ id: "p_1", node_type: "paragraph", children: [] }]
+      })
+    });
+
+    try {
+      await service.attachDocument("chat-main", "D:/docs/sample.docx");
+      const result = await service.submitUserTurn({
+        sessionId: "chat-main",
+        userInput: "处理这个空段落文档"
+      });
+
+      expect(result.response.mode).toBe("execute");
+      expect(runtimeCalls).toHaveLength(1);
+      expect(runtimeCalls[0]?.doc.nodes).toEqual([]);
+      expect((runtimeCalls[0]?.doc.metadata?.structureIndex as { paragraphs?: Array<{ id: string }> }).paragraphs?.[0]?.id).toBe(
+        "p_1"
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   it("aggregates repeated write events from the same semantic group into one summary step", async () => {
     const dir = await makeTempDir();
     const store = new SqliteAgentStateStore({ dbPath: path.join(dir, "state.db") });

@@ -133,7 +133,18 @@ export class DefaultExecutor implements Executor {
           stepId: step.id,
           operation: step.operation,
           summary: execution.output!.summary,
-          rollbackToken: execution.output!.rollbackToken
+          rollbackToken: execution.output!.rollbackToken,
+          patchSet:
+            execution.output!.artifacts && typeof execution.output!.artifacts.patchSet === "object"
+              ? (execution.output!.artifacts.patchSet as Record<string, unknown>)
+              : undefined,
+          patchTargetCount:
+            typeof execution.output!.artifacts?.targetCount === "number"
+              ? execution.output!.artifacts.targetCount
+              : undefined,
+          patchPartPaths: Array.isArray(execution.output!.artifacts?.partPaths)
+            ? (execution.output!.artifacts.partPaths as string[])
+            : undefined
         });
       }
 
@@ -389,7 +400,16 @@ export class DefaultExecutor implements Executor {
           status: "success",
           payload: buildStepEventPayload(step, {
             summary: output.summary,
-            rollbackToken: output.rollbackToken
+            rollbackToken: output.rollbackToken,
+            patchSet:
+              output.artifacts && typeof output.artifacts.patchSet === "object"
+                ? (output.artifacts.patchSet as Record<string, unknown>)
+                : undefined,
+            partPaths: Array.isArray(output.artifacts?.partPaths) ? output.artifacts.partPaths : undefined,
+            targetCount:
+              typeof output.artifacts?.targetCount === "number"
+                ? output.artifacts.targetCount
+                : undefined
           }),
           createdAt: Date.now()
         });

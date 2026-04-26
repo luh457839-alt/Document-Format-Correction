@@ -18,6 +18,10 @@ export function buildTemplateContextFromObservation(input: {
     version: "v1",
     nodes: documentStateToNodes(input.observation),
     metadata: {
+      inputDocxPath: input.docxPath,
+      sourceDocxPath: input.docxPath,
+      docxObservation: input.observation,
+      docxPackageModel: input.observation.package_model,
       sourceDocumentMeta: input.observation.document_meta,
       structureIndex: buildStructureIndex(input.observation)
     }

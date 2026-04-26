@@ -16,7 +16,7 @@
     "sync_request_timeout_ms": 300000,
     "max_retries": 0,
     "temperature": 0.0,
-    "use_json_schema": null,
+    "use_json_schema": false,
     "schema_strict": null,
     "compat_mode": "auto",
     "runtime_mode": "react_loop"

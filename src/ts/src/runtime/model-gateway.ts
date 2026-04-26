@@ -1,10 +1,8 @@
-import { AgentError } from "../core/errors.js";
+import { AgentError, asAppError } from "../core/errors.js";
 import type { ChatModelConfig, ConversationMessage, PlannerModelConfig } from "../core/types.js";
 import { OpenAiCompatibleChatClient } from "../llm/openai-compatible-client.js";
-import {
-  resolveChatModelConfig,
-  resolvePlannerModelConfig
-} from "../planner/llm-planner.js";
+import { resolveChatModelConfig, resolvePlannerModelConfig } from "../model-gateway/config.js";
+import { OpenAiStructuredModelGateway } from "../model-gateway/structured-model-gateway.js";
 import type { AgentSessionSnapshot } from "./state/sqlite-agent-state-store.js";
 import type { PythonDocxObservationState } from "../tools/python-tool-client.js";
 
@@ -114,12 +112,18 @@ export class LlmAgentModelGateway implements AgentModelGateway {
   private readonly plannerConfig: PlannerModelConfig;
   private readonly chatClient: OpenAiCompatibleChatClient<ChatModelConfig>;
   private readonly plannerClient: OpenAiCompatibleChatClient<PlannerModelConfig>;
+  private readonly structuredGateway: OpenAiStructuredModelGateway;
 
   constructor(deps: LlmAgentModelGatewayDeps = {}) {
     this.chatConfig = resolveChatModelConfig(deps.chatConfig, deps.env);
     this.plannerConfig = resolvePlannerModelConfig(deps.plannerConfig, deps.env);
     this.chatClient = new OpenAiCompatibleChatClient(this.chatConfig, { fetchImpl: deps.fetchImpl });
     this.plannerClient = new OpenAiCompatibleChatClient(this.plannerConfig, { fetchImpl: deps.fetchImpl });
+    this.structuredGateway = new OpenAiStructuredModelGateway({
+      plannerConfig: this.plannerConfig,
+      env: deps.env,
+      fetchImpl: deps.fetchImpl
+    });
   }
 
   async decideTurn(input: {
@@ -256,29 +260,39 @@ export class LlmAgentModelGateway implements AgentModelGateway {
       { role: "system", content: input.systemPrompt },
       { role: "user", content: JSON.stringify(input.userPayload, null, 2) }
     ];
-    const content =
-      config.useJsonSchema === false
-        ? await this.plannerClient.requestCompletion({
-            messages,
-            requestCode: "E_AGENT_MODEL_REQUEST",
-            upstreamCode: "E_AGENT_MODEL_UPSTREAM",
-            responseCode: "E_AGENT_MODEL_RESPONSE",
-            requestLabel: "Agent model request",
-            payloadLabel: "Model payload"
-          })
-        : await this.plannerClient.requestJson({
-            messages,
-            requestCode: "E_AGENT_MODEL_REQUEST",
-            upstreamCode: "E_AGENT_MODEL_UPSTREAM",
-            responseCode: "E_AGENT_MODEL_RESPONSE",
-            requestLabel: "Agent model request",
-            payloadLabel: "Model payload",
-            schemaName: input.schemaName,
-            schema: input.schema,
-            strict: config.schemaStrict !== false,
-            parseContent: (content) => content
-          });
-    return input.parseContent(content);
+    try {
+      return await this.structuredGateway.requestJson(
+        {
+          messages,
+          requestCode: "E_AGENT_MODEL_REQUEST",
+          upstreamCode: "E_AGENT_MODEL_UPSTREAM",
+          responseCode: "E_AGENT_MODEL_RESPONSE",
+          requestLabel: "Agent model request",
+          payloadLabel: "Model payload",
+          schemaUnsupportedCode: "E_AGENT_MODEL_SCHEMA_UNSUPPORTED",
+          schemaName: input.schemaName,
+          schema: input.schema,
+          parseContent: input.parseContent
+        },
+        config
+      );
+    } catch (err) {
+      const info = asAppError(err, "E_AGENT_MODEL_REQUEST");
+      const fallbackFailed =
+        info.code === "E_AGENT_MODEL_REQUEST" &&
+        (info.message.includes("fallback failed") || info.message.includes("fallback parse failed"));
+      if (config.useJsonSchema !== false && config.compatMode !== "strict" && fallbackFailed) {
+        throw new AgentError({
+          code: "E_AGENT_MODEL_SCHEMA_FALLBACK_FAILED",
+          message:
+            "Agent model request detected response_format json_schema incompatibility and attempted " +
+            `fallback without response_format, but the fallback request failed: ${info.message}`,
+          retryable: false,
+          cause: err
+        });
+      }
+      throw err;
+    }
   }
 
   private async requestText(

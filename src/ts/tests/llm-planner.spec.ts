@@ -36,6 +36,22 @@ const anchoredDoc: DocumentIR = {
   }
 };
 
+const unwritableParagraphDoc: DocumentIR = {
+  id: "demo-unwritable",
+  version: "v1",
+  nodes: [{ id: "p_0_r_0", text: "主标题" }],
+  metadata: {
+    structureIndex: {
+      paragraphs: [
+        { id: "p_0", text: "主标题", role: "heading", headingLevel: 1, runNodeIds: ["p_0_r_0"] },
+        { id: "p_1", text: "空正文段", role: "body", runNodeIds: ["p_1_r_missing"] }
+      ],
+      roleCounts: { heading: 1, body: 1 },
+      paragraphMap: {}
+    }
+  }
+};
+
 function createEnvelope(planText: string): string {
   return JSON.stringify({
     choices: [{ message: { content: planText } }]
@@ -141,6 +157,20 @@ describe("planner config", () => {
     expect(cfg.useJsonSchema).toBe(false);
   });
 
+  it("defaults deepseek remote models to compatibility json mode in auto compat mode", () => {
+    const cfg = resolvePlannerModelConfig(
+      {},
+      {
+        TS_AGENT_PLANNER_API_KEY: "env-key",
+        TS_AGENT_PLANNER_BASE_URL: "https://api.deepseek.com/v1",
+        TS_AGENT_PLANNER_MODEL: "deepseek-v4-flash"
+      }
+    );
+
+    expect(cfg.compatMode).toBe("auto");
+    expect(cfg.useJsonSchema).toBe(false);
+  });
+
   it("preserves explicit runtime and schema overrides over compatibility defaults", () => {
     const cfg = resolvePlannerModelConfig(
       {
@@ -193,8 +223,22 @@ describe("planner config", () => {
         {
           TS_AGENT_PLANNER_API_KEY: "env-key"
         }
-      )
+    )
     ).toBe("react_loop");
+  });
+
+  it("keeps json schema enabled for non-compat remote models by default", () => {
+    const cfg = resolvePlannerModelConfig(
+      {},
+      {
+        TS_AGENT_PLANNER_API_KEY: "env-key",
+        TS_AGENT_PLANNER_BASE_URL: "https://api.openai.com/v1",
+        TS_AGENT_PLANNER_MODEL: "gpt-4o-mini"
+      }
+    );
+
+    expect(cfg.compatMode).toBe("auto");
+    expect(cfg.useJsonSchema).toBe(true);
   });
 
   it("throws when apiKey is unavailable", () => {
@@ -966,6 +1010,82 @@ describe("llm planner createPlan", () => {
       targetSelector: { scope: "body" },
       payload: { font_color: "FF0000" }
     });
+  });
+
+  it("accepts paragraph selectors when filtering still leaves writable document nodes", async () => {
+    const plan = {
+      taskId: "task_demo",
+      goal: "部分段落设为红色",
+      steps: [
+        {
+          id: "s1",
+          toolName: "write_operation",
+          readOnly: false,
+          idempotencyKey: "write:s1",
+          operation: {
+            id: "op1",
+            type: "set_font_color",
+            targetSelector: {
+              scope: "paragraph_ids",
+              paragraphIds: ["p_0", "p_1"]
+            },
+            payload: { font_color: "FF0000" }
+          }
+        }
+      ]
+    };
+    const planner = new LlmPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: createFetchMock(createEnvelope(JSON.stringify(plan)))
+    });
+
+    await expect(planner.createPlan("部分段落设为红色", unwritableParagraphDoc)).resolves.toMatchObject({
+      steps: [
+        {
+          operation: {
+            targetSelector: {
+              scope: "paragraph_ids",
+              paragraphIds: ["p_0", "p_1"]
+            }
+          }
+        }
+      ]
+    });
+  });
+
+  it("rejects paragraph selectors when filtering removes every writable document node", async () => {
+    const plan = {
+      taskId: "task_demo",
+      goal: "空正文段落设为红色",
+      steps: [
+        {
+          id: "s1",
+          toolName: "write_operation",
+          readOnly: false,
+          idempotencyKey: "write:s1",
+          operation: {
+            id: "op1",
+            type: "set_font_color",
+            targetSelector: {
+              scope: "paragraph_ids",
+              paragraphIds: ["p_1"]
+            },
+            payload: { font_color: "FF0000" }
+          }
+        }
+      ]
+    };
+    const planner = new LlmPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: createFetchMock(createEnvelope(JSON.stringify(plan)))
+    });
+
+    await expect(planner.createPlan("空正文段落设为红色", unwritableParagraphDoc)).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof AgentError &&
+        err.info.code === "E_PLANNER_PLAN_INVALID" &&
+        err.info.message.includes("no writable targets after filtering")
+    );
   });
 
   it("fails when steps are empty", async () => {

@@ -661,7 +661,7 @@ function requiresSealEvidence(template: TemplateContract): boolean {
   return /seal|stamp|印章/i.test(
     JSON.stringify({
       layout_rules: template.layout_rules,
-      operation_blocks: template.operation_blocks
+      patch_blocks: template.patch_blocks
     })
   );
 }

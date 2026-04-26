@@ -1,18 +1,17 @@
 {
   "template_meta": {
     "id": "test_1",
-    "name": "宋体 Times New Roman 办公排版纯格式模板",
-    "version": "1.4.0",
-    "schema_version": "1.0",
-    "description": "仅保留格式写入映射的宽松模板，不对文档结构、顺序、编号、样式或内容做任何额外校验。",
+    "name": "办公排版纯格式模板（Patch DSL）",
+    "version": "1.5.0",
+    "schema_version": "2.0",
+    "description": "仅保留格式写入映射的宽松模板，主写入契约使用 patch_blocks，不对文档结构、顺序、编号、样式或内容做额外校验。",
     "locale": "zh-CN",
     "author": "Codex",
     "tags": [
       "custom",
       "office-standard",
       "format-only",
-      "simsun",
-      "times-new-roman"
+      "patch-dsl"
     ]
   },
   "semantic_blocks": [
@@ -22,7 +21,7 @@
       "description": "图片相关段落的格式映射语义。",
       "examples": [
         "（图片段落）",
-        "图7.1.1 模型输出截图"
+        "图 7.1.1 模型输出截图"
       ],
       "negative_examples": [
         "项目实施方案",
@@ -93,7 +92,7 @@
       "label": "一级列表项",
       "description": "一级列表格式映射语义。",
       "examples": [
-        "- 统一使用宋体与 Times New Roman"
+        "- 统一使用宋体办公排版"
       ],
       "required": false,
       "multiple": true
@@ -103,7 +102,7 @@
       "label": "二级列表项",
       "description": "二级列表格式映射语义。",
       "examples": [
-        "  - 英文内容使用 Times New Roman"
+        "  - 小四字号，22 磅行距"
       ],
       "required": false,
       "multiple": true
@@ -135,6 +134,7 @@
       "document_scope": "full_document",
       "allow_unclassified_paragraphs": true,
       "page_layout_reference": {
+        "paper_size": "A4",
         "margin_top_cm": 2.5,
         "margin_bottom_cm": 2.0,
         "margin_left_cm": 2.5,
@@ -204,201 +204,260 @@
       }
     ]
   },
-  "operation_blocks": [
+  "patch_blocks": [
+    {
+      "semantic_key": "document_page_layout",
+      "selector": {
+        "part": "document",
+        "scope": "section",
+        "match": {
+          "section_index": 0
+        }
+      },
+      "operations": [
+        {
+          "type": "set_section_layout",
+          "section_layout": {
+            "paper_size": "A4",
+            "margin_top_cm": 2.5,
+            "margin_bottom_cm": 2.0,
+            "margin_left_cm": 2.5,
+            "margin_right_cm": 2.0
+          }
+        }
+      ]
+    },
     {
       "semantic_key": "cover_image",
-      "text_style": {},
-      "paragraph_style": {}
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
+      },
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "center"
+          }
+        }
+      ]
     },
     {
       "semantic_key": "document_title",
-      "text_style": {
-        "font_name": "SimSun",
-        "font_size_pt": 14,
-        "is_bold": true
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "language_font_overrides": {
-        "zh": {
-          "font_name": "SimSun"
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "left",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 22
+            }
+          }
         },
-        "en": {
-          "font_name": "Times New Roman"
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "SimSun",
+            "font_size_pt": 14,
+            "is_bold": true
+          }
         }
-      },
-      "paragraph_style": {
-        "paragraph_alignment": "left",
-        "line_spacing": {
-          "mode": "exact",
-          "pt": 22
-        }
-      }
+      ]
     },
     {
       "semantic_key": "heading_level_1",
-      "text_style": {
-        "font_name": "SimSun",
-        "font_size_pt": 14,
-        "is_bold": true
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "language_font_overrides": {
-        "zh": {
-          "font_name": "SimSun"
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "left",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 22
+            }
+          }
         },
-        "en": {
-          "font_name": "Times New Roman"
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "SimSun",
+            "font_size_pt": 14,
+            "is_bold": true
+          }
         }
-      },
-      "paragraph_style": {
-        "paragraph_alignment": "left",
-        "line_spacing": {
-          "mode": "exact",
-          "pt": 22
-        }
-      }
+      ]
     },
     {
       "semantic_key": "heading_level_2",
-      "text_style": {
-        "font_name": "SimSun",
-        "font_size_pt": 14,
-        "is_bold": true
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "language_font_overrides": {
-        "zh": {
-          "font_name": "SimSun"
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "left",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 22
+            }
+          }
         },
-        "en": {
-          "font_name": "Times New Roman"
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "SimSun",
+            "font_size_pt": 14,
+            "is_bold": true
+          }
         }
-      },
-      "paragraph_style": {
-        "paragraph_alignment": "left",
-        "line_spacing": {
-          "mode": "exact",
-          "pt": 22
-        }
-      }
+      ]
     },
     {
       "semantic_key": "heading_level_3",
-      "text_style": {
-        "font_name": "SimSun",
-        "font_size_pt": 12,
-        "is_bold": true
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "language_font_overrides": {
-        "zh": {
-          "font_name": "SimSun"
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "left",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 22
+            }
+          }
         },
-        "en": {
-          "font_name": "Times New Roman"
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "SimSun",
+            "font_size_pt": 12,
+            "is_bold": true
+          }
         }
-      },
-      "paragraph_style": {
-        "paragraph_alignment": "left",
-        "line_spacing": {
-          "mode": "exact",
-          "pt": 22
-        }
-      }
+      ]
     },
     {
       "semantic_key": "body_paragraph",
-      "text_style": {
-        "font_name": "SimSun",
-        "font_size_pt": 12,
-        "is_bold": false
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "language_font_overrides": {
-        "zh": {
-          "font_name": "SimSun"
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 22
+            },
+            "first_line_indent_chars": 2
+          }
         },
-        "en": {
-          "font_name": "Times New Roman"
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "SimSun",
+            "font_size_pt": 12,
+            "is_bold": false
+          }
         }
-      },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": {
-          "mode": "exact",
-          "pt": 22
-        },
-        "first_line_indent_chars": 2
-      }
+      ]
     },
     {
       "semantic_key": "list_item_level_0",
-      "text_style": {
-        "font_name": "SimSun",
-        "font_size_pt": 12,
-        "is_bold": false
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "language_font_overrides": {
-        "zh": {
-          "font_name": "SimSun"
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 22
+            }
+          }
         },
-        "en": {
-          "font_name": "Times New Roman"
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "SimSun",
+            "font_size_pt": 12,
+            "is_bold": false
+          }
         }
-      },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": {
-          "mode": "exact",
-          "pt": 22
-        }
-      }
+      ]
     },
     {
       "semantic_key": "list_item_level_1",
-      "text_style": {
-        "font_name": "SimSun",
-        "font_size_pt": 12,
-        "is_bold": false
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "language_font_overrides": {
-        "zh": {
-          "font_name": "SimSun"
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 22
+            }
+          }
         },
-        "en": {
-          "font_name": "Times New Roman"
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "SimSun",
+            "font_size_pt": 12,
+            "is_bold": false
+          }
         }
-      },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": {
-          "mode": "exact",
-          "pt": 22
-        }
-      }
+      ]
     },
     {
       "semantic_key": "table_text",
-      "text_style": {
-        "font_name": "SimSun",
-        "font_size_pt": 12,
-        "is_bold": false
+      "selector": {
+        "part": "document",
+        "scope": "paragraph"
       },
-      "language_font_overrides": {
-        "zh": {
-          "font_name": "SimSun"
+      "operations": [
+        {
+          "type": "set_paragraph_style",
+          "paragraph_style": {
+            "paragraph_alignment": "justify",
+            "line_spacing": {
+              "mode": "exact",
+              "pt": 22
+            }
+          }
         },
-        "en": {
-          "font_name": "Times New Roman"
+        {
+          "type": "set_run_style",
+          "text_style": {
+            "font_name": "SimSun",
+            "font_size_pt": 12,
+            "is_bold": false
+          }
         }
-      },
-      "paragraph_style": {
-        "paragraph_alignment": "justify",
-        "line_spacing": {
-          "mode": "exact",
-          "pt": 22
-        }
-      }
-    },
-    {
-      "semantic_key": "blank_or_unknown",
-      "text_style": {},
-      "paragraph_style": {}
+      ]
     }
   ],
   "classification_contract": {
@@ -420,7 +479,7 @@
   "style_reference": {
     "cover_image": {
       "label": "图片段落",
-      "notes": "任意带图片证据的段落，不生成文字样式写操作。"
+      "notes": "默认居中；若业务需要原位保留，可直接删掉对应 patch block。"
     },
     "document_title": {
       "font_zh": "宋体",
@@ -478,10 +537,17 @@
       "line_spacing_pt": 22
     },
     "page": {
+      "paper_size": "A4",
       "margin_top_cm": 2.5,
       "margin_bottom_cm": 2.0,
       "margin_left_cm": 2.5,
       "margin_right_cm": 2.0
     }
+  },
+  "runtime_notes": {
+    "notes": [
+      "该模板主执行路径使用 patch_blocks。",
+      "style_reference 中保留的 font_en 仍属于说明性目标，不等于当前 patch DSL 已内建 mixed-language run 条件选择。"
+    ]
   }
 }

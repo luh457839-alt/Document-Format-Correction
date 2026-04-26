@@ -143,6 +143,7 @@ function orderTemplateRunReportForJson(report: TemplateRunReport): TemplateRunRe
     validation_result: orderValidationResultForJson(report.validation_result),
     ...(report.warnings !== undefined ? { warnings: report.warnings.map(orderRunWarningForJson) } : {}),
     execution_plan: report.execution_plan,
+    patch_plan: report.patch_plan,
     write_plan: report.write_plan,
     execution_result: orderExecutionResultForJson(report.execution_result)
   };

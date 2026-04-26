@@ -144,8 +144,8 @@ export function normalizeWriteOperationPayload(operation: Operation): Record<str
       if (after !== undefined) {
         spacing.space_after_pt = after;
       }
-      if (!Object.values(spacing).some((value) => typeof value === "number" && value > 0)) {
-        throw invalidPayload(operation.type, "set_paragraph_spacing requires before_pt or after_pt with at least one positive value");
+      if (Object.keys(spacing).length === 0) {
+        throw invalidPayload(operation.type, "set_paragraph_spacing requires before_pt or after_pt");
       }
       return spacing;
     }
@@ -163,6 +163,80 @@ export function normalizeWriteOperationPayload(operation: Operation): Record<str
       }
       const fontSize = pickPositiveNumber(payload.font_size_pt, payload.fontSizePt, payload.fontSize) ?? 12;
       return { first_line_indent_pt: indentChars * fontSize };
+    }
+    case "set_style_definition": {
+      const styleDefinition = pickNonEmptyRecord(payload.style_definition, payload.styleDefinition);
+      if (!styleDefinition) {
+        throw invalidPayload(operation.type, "set_style_definition requires style_definition");
+      }
+      return { style_definition: styleDefinition };
+    }
+    case "set_numbering_level": {
+      const numberingLevel = pickNonEmptyRecord(payload.numbering_level, payload.numberingLevel);
+      if (!numberingLevel) {
+        throw invalidPayload(operation.type, "set_numbering_level requires numbering_level");
+      }
+      return { numbering_level: numberingLevel };
+    }
+    case "set_settings_flag": {
+      const settings = pickNonEmptyRecord(payload.settings);
+      if (!settings) {
+        throw invalidPayload(operation.type, "set_settings_flag requires settings");
+      }
+      return { settings };
+    }
+    case "set_attr": {
+      const name = pickNonEmptyString(payload.name);
+      if (!name) {
+        throw invalidPayload(operation.type, "set_attr requires name");
+      }
+      return {
+        ...(pickNonEmptyString(payload.path) ? { path: String(payload.path).trim() } : {}),
+        name,
+        value: payload.value
+      };
+    }
+    case "remove_attr": {
+      const name = pickNonEmptyString(payload.name);
+      if (!name) {
+        throw invalidPayload(operation.type, "remove_attr requires name");
+      }
+      return {
+        ...(pickNonEmptyString(payload.path) ? { path: String(payload.path).trim() } : {}),
+        name
+      };
+    }
+    case "set_text":
+      return {
+        ...(pickNonEmptyString(payload.path) ? { path: String(payload.path).trim() } : {}),
+        value: payload.value ?? ""
+      };
+    case "remove_node":
+      return {
+        ...(pickNonEmptyString(payload.path) ? { path: String(payload.path).trim() } : {})
+      };
+    case "ensure_node": {
+      const path = pickNonEmptyString(payload.path);
+      const xmlTag = pickNonEmptyString(payload.xml_tag, payload.xmlTag);
+      if (!path || !xmlTag) {
+        throw invalidPayload(operation.type, "ensure_node requires path and xml_tag");
+      }
+      const attrs = pickStringRecord(payload.attrs);
+      return {
+        path,
+        xml_tag: xmlTag,
+        ...(attrs ? { attrs } : {})
+      };
+    }
+    case "replace_node_xml": {
+      const nodeXml = pickNonEmptyString(payload.node_xml, payload.nodeXml);
+      if (!nodeXml) {
+        throw invalidPayload(operation.type, "replace_node_xml requires node_xml");
+      }
+      return {
+        ...(pickNonEmptyString(payload.path) ? { path: String(payload.path).trim() } : {}),
+        node_xml: nodeXml
+      };
     }
     case "merge_paragraph":
       return {};
@@ -249,6 +323,26 @@ function pickPositiveInteger(...values: unknown[]): number | undefined {
     }
   }
   return undefined;
+}
+
+function pickNonEmptyRecord(...values: unknown[]): Record<string, unknown> | undefined {
+  for (const value of values) {
+    if (typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0) {
+      return value as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+function pickStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const entries = Object.entries(value).filter(([, entryValue]) => typeof entryValue === "string");
+  if (entries.length === 0) {
+    return undefined;
+  }
+  return Object.fromEntries(entries) as Record<string, string>;
 }
 
 function pickLineSpacingValue(value: unknown): number | { mode: "exact"; pt: number } | undefined {

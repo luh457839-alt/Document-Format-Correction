@@ -1,10 +1,10 @@
-# 文档格式修正 Agent V0.3.0
+# 文档格式修正 Agent V0.4.0
 
 文档格式修正 Agent 是一个面向本地桌面场景的 DOCX 处理系统。它把对话式交互、文档观察、结构理解、格式修改、模板执行和结果导出收敛到同一条本地主链里，适合需要“用自然语言整理 Word 文档”的场景。
 
 ## 当前版本定位
 
-`3.0` 版本对应当前仓库的真实形态，而不是历史设想：
+`0.4.0` 版本对应当前仓库的真实形态，而不是历史设想：
 
 - 它是本地桌面应用，不是在线 SaaS。
 - 主链是 `React 前端 + Python 宿主 + TypeScript Agent Runtime`。
@@ -12,6 +12,13 @@
 - Python 负责桌面 GUI、本地 Web API、TS CLI 桥接、Python 工具执行和最终 DOCX 物化。
 - 文档 observation 已统一到一份共享 schema，Python 路径和 TS 原生 fallback 都向上暴露同一结构。
 - 聊天式处理和模板式处理共享同一套宿主与运行时基础设施。
+
+本次 `0.4.0` 迭代补齐了一个关键行为：
+
+- 共享写入链路默认会跳过“结构上命中但没有可写 text run”的段落，而不是整次任务直接失败。
+- `paragraph_ids`、`body`、`heading`、`list_item` 等段落级目标现在统一采用“过滤可写目标后继续执行”的语义。
+- 当目标全部不可写时，系统会明确返回“过滤后没有可写目标”，而不是误报为可写性硬错误。
+- 聊天子系统与模板子系统共用这套策略，并在执行产物中保留跳过段落诊断信息。
 
 ## 能力概览
 
@@ -136,7 +143,7 @@ Copy-Item config.example.json config.json
     "sync_request_timeout_ms": 300000,
     "max_retries": 0,
     "temperature": 0.0,
-    "use_json_schema": null,
+    "use_json_schema": false,
     "schema_strict": null,
     "compat_mode": "auto",
     "runtime_mode": "react_loop"
@@ -152,6 +159,14 @@ Copy-Item config.example.json config.json
 - `planner.max_turns`：`react_loop` 的最大轮数
 - `planner.sync_request_timeout_ms`：同步 HTTP 等待上限
 - `planner.runtime_mode`：`plan_once` 或 `react_loop`
+- `planner.use_json_schema`：为 `false` 时会强制走纯文本 JSON 模式，不发送 `response_format`
+- `planner.compat_mode`：`auto` 会对兼容性后端自动放宽 schema 依赖，`strict` 会保留严格失败语义
+
+如果你使用的是 DeepSeek 或其他 OpenAI-compatible 网关，并且上游返回了 `response_format` / `json_schema` 不支持之类的 4xx：
+
+- 先把 `planner.use_json_schema` 显式设为 `false`
+- 保持 `planner.compat_mode = "auto"`，runtime 判路和 structured 请求会在 schema 被拒绝时自动重试一次不带 `response_format` 的请求
+- 如果你需要严格检查上游兼容性，再切到 `planner.compat_mode = "strict"`
 
 ## 启动方式
 

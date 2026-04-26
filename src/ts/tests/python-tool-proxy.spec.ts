@@ -187,10 +187,13 @@ describe("python tool proxy", () => {
     expect(result.status).toBe("completed");
     expect(result.finalDoc.nodes[0]?.style).toMatchObject({ font_name: "SimSun", operation: "set_font" });
     expect(result.changeSet.changes).toHaveLength(1);
-    expect(result.changeSet.changes[0]?.summary).toBe("Applied set_font to n1.");
+    expect(result.changeSet.changes[0]?.summary).toContain("Applied patch set for set_font");
+    expect(result.changeSet.changes[0]?.patchSet).toMatchObject({
+      operations: [expect.objectContaining({ target_id: "target:inline:n1", name: "font_name", value: "SimSun" })]
+    });
     await expect(readFile(outputDocxPath, "utf8")).resolves.toBe("final-docx");
     await expect(readFile(logPath, "utf8")).resolves.toBe(
-      "execute:inspect_document\nexecute:write_operation\nexecute:materialize_document\n"
+      "execute:inspect_document\nexecute:materialize_document\n"
     );
   });
 
@@ -256,8 +259,9 @@ describe("python tool proxy", () => {
 
     expect(result.status).toBe("completed");
     expect(result.changeSet.changes).toHaveLength(1);
+    expect(result.changeSet.changes[0]?.patchTargetCount).toBe(3);
     await expect(readFile(logPath, "utf8")).resolves.toBe(
-      "execute:write_operation\nexecute:materialize_document\n"
+      "execute:materialize_document\n"
     );
   });
 });

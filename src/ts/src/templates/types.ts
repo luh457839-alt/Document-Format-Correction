@@ -1,12 +1,16 @@
 import type { ChatModelConfig, DocumentIR, Operation, PlannerModelConfig } from "../core/types.js";
+import type { WriteIntent } from "../document-execution/unified-write-pipeline.js";
 import type { DocumentStructureIndex } from "../runtime/document-state.js";
+import type { DocxPatchSet } from "../tools/docx-observation-schema.js";
 import type { PythonDocxObservationState } from "../tools/python-tool-client.js";
 import type {
   ClassificationConflict,
   ClassificationMatch,
   DerivedSemanticBlock,
-  OperationBlock,
   TemplateContract,
+  TemplatePatchBlock,
+  TemplatePatchOperation,
+  TemplatePatchSelector,
   TemplateMeta
 } from "./template-contract.js";
 
@@ -208,11 +212,9 @@ export interface TemplateValidationIssueDiagnostics {
 export interface TemplateAtomicPlanItem {
   semantic_key: string;
   paragraph_ids: string[];
-  text_style: OperationBlock["text_style"];
-  paragraph_style: OperationBlock["paragraph_style"];
-  relative_spacing?: OperationBlock["relative_spacing"];
-  placement_rules?: OperationBlock["placement_rules"];
-  language_font_overrides?: OperationBlock["language_font_overrides"];
+  selector: TemplatePatchSelector;
+  operations: TemplatePatchOperation[];
+  source_block?: TemplatePatchBlock;
 }
 
 export interface TemplateDerivedSemanticPlanItem extends TemplateAtomicPlanItem {
@@ -245,6 +247,7 @@ export interface TemplateRunReport {
   validation_result: TemplateValidationResult;
   warnings?: TemplateRunWarning[];
   execution_plan: TemplateAtomicPlanItem[];
+  patch_plan: TemplatePatchPlanItem[];
   write_plan: TemplateWritePlanItem[];
   execution_result: TemplateExecutionResult;
 }
@@ -257,7 +260,9 @@ export interface TemplateRunnerDeps {
     context: TemplateContext;
     llm?: TemplateLlmConfig;
   }) => Promise<TemplateClassificationResult>;
+  buildPatchPlan?: (input: TemplatePatchPlanBuildInput) => TemplatePatchPlanBuildResult;
   buildWritePlan?: (input: TemplateWritePlanBuildInput) => TemplateWritePlanBuildResult;
+  executePatchPlan?: (input: TemplatePatchPlanExecutionInput) => Promise<TemplatePatchExecutionResult>;
   executeWritePlan?: (input: TemplateWritePlanExecutionInput) => Promise<TemplateWritePlanExecutionResult>;
   materializeDoc?: (
     doc: DocumentIR
@@ -266,16 +271,29 @@ export interface TemplateRunnerDeps {
   env?: NodeJS.ProcessEnv;
 }
 
-export type TemplateWritePlanItem = Operation;
+export interface TemplateWritePlanItem {
+  id: string;
+  semantic_key: string;
+  selector?: TemplatePatchSelector;
+  operations?: TemplatePatchOperation[];
+  intent?: WriteIntent;
+  legacy_operation?: Operation;
+}
 
 export interface TemplateExecutionArtifactsStable {
+  patch_set_count: number;
+  patch_target_count: number;
+  patch_part_paths: string[];
   write_operation_count: number;
   executed_step_count: number;
   materialized: boolean;
   output_docx_path?: string;
+  skipped_paragraph_count?: number;
+  skipped_paragraph_ids?: string[];
 }
 
 export interface TemplateExecutionArtifactsDebug {
+  patch_sets?: DocxPatchSet[];
   step_summaries?: string[];
   change_set_summary?: Record<string, unknown>;
   materialize_artifacts_summary?: Record<string, unknown>;
@@ -298,23 +316,41 @@ export interface TemplateWritePlanBuildInput {
   structureIndex: DocumentStructureIndex;
 }
 
-export interface TemplateWritePlanBuildResult {
+export interface TemplatePatchPlanItem {
+  id: string;
+  semantic_key: string;
+  operation: TemplateWritePlanItem;
+  patch_set: DocxPatchSet;
+  patch_target_ids: string[];
+  patch_target_count: number;
+  patch_part_paths: string[];
+}
+
+export interface TemplatePatchPlanBuildResult {
+  patchPlan: TemplatePatchPlanItem[];
   writePlan: TemplateWritePlanItem[];
   issues: TemplateValidationIssue[];
   document: DocumentIR;
   structureIndex: DocumentStructureIndex;
 }
 
-export interface TemplateWritePlanExecutionInput {
+export type TemplatePatchPlanBuildInput = TemplateWritePlanBuildInput;
+export type TemplateWritePlanBuildResult = TemplatePatchPlanBuildResult;
+
+export interface TemplatePatchPlanExecutionInput {
   context: TemplateContext;
+  patchPlan: TemplatePatchPlanItem[];
   writePlan: TemplateWritePlanItem[];
   outputDocxPath: string;
   debug?: boolean;
 }
 
-export interface TemplateWritePlanExecutionResult {
+export interface TemplatePatchExecutionResult {
   applied: boolean;
   finalDoc: DocumentIR;
   changeSummary?: string;
   artifacts?: Record<string, unknown>;
 }
+
+export type TemplateWritePlanExecutionInput = TemplatePatchPlanExecutionInput;
+export type TemplateWritePlanExecutionResult = TemplatePatchExecutionResult;

@@ -12,6 +12,13 @@ import type {
 } from "../core/types.js";
 import { DefaultValidator } from "../validator/default-validator.js";
 import { DefaultRiskPolicy } from "../runtime/policy.js";
+import {
+  operationToWriteIntent,
+  runUnifiedWritePipeline,
+  type UnifiedWritePipelineInput,
+  type UnifiedWritePipelineResult,
+  type WriteIntent
+} from "./unified-write-pipeline.js";
 import { expandPlanSelectors } from "../runtime/selector-expander.js";
 
 export interface ExecuteWritePlanOptions extends ExecutorOptions {
@@ -28,6 +35,7 @@ export interface DocumentExecutionFacade {
     doc: DocumentIR,
     options?: ExecuteWritePlanOptions
   ): Promise<ExecutionResult>;
+  runUnifiedWritePipeline(input: UnifiedWritePipelineInput): Promise<UnifiedWritePipelineResult>;
 }
 
 export interface DocumentExecutionFacadeDeps {
@@ -35,6 +43,9 @@ export interface DocumentExecutionFacadeDeps {
   executor?: Executor;
   validator?: Validator;
   riskPolicy?: RiskPolicy;
+  materializeDocument?: (
+    doc: DocumentIR
+  ) => Promise<{ doc: DocumentIR; summary: string; artifacts?: Record<string, unknown> }>;
 }
 
 export function createDocumentExecutionFacade(
@@ -61,34 +72,33 @@ export function createDocumentExecutionFacade(
       return result;
     },
     executeWritePlan: async (writePlan, doc, options) => {
-      const plan: Plan = {
-        taskId: options?.taskId ?? `write:${doc.id}`,
-        goal: options?.goal ?? "execute_write_plan",
-        steps: writePlan.map((operation) => ({
-          id: operation.id,
-          toolName: "write_operation",
-          readOnly: false,
-          idempotencyKey: `write:${operation.id}`,
-          operation
-        }))
-      };
-      return await createDocumentExecutionFacadeExecutor(executor, validator, plan, doc, options);
-    }
+      const result = await runUnifiedWritePipeline(
+        {
+          doc,
+          intents: writePlan.map((operation) => operationToWriteIntent(operation)),
+          taskId: options?.taskId,
+          goal: options?.goal,
+          dryRun: options?.dryRun,
+          maxConcurrentReadOnly: options?.maxConcurrentReadOnly,
+          defaultTimeoutMs: options?.defaultTimeoutMs,
+          budgetDeadlineMs: options?.budgetDeadlineMs,
+          defaultRetryLimit: options?.defaultRetryLimit,
+          retryBackoffMs: options?.retryBackoffMs,
+          confirmStep: options?.confirmStep,
+          onExecutionEvent: options?.onExecutionEvent
+        },
+        {
+          executor,
+          validator
+        }
+      );
+      return result.executionResult;
+    },
+    runUnifiedWritePipeline: async (input) =>
+      await runUnifiedWritePipeline(input, {
+        executor,
+        validator,
+        materializeDocument: deps.materializeDocument
+      })
   };
-}
-
-async function createDocumentExecutionFacadeExecutor(
-  executor: Executor,
-  validator: Validator,
-  plan: Plan,
-  doc: DocumentIR,
-  options?: ExecutorOptions
-): Promise<ExecutionResult> {
-  const concretePlan = expandPlanSelectors(plan, doc);
-  await validator.preValidate(concretePlan, doc);
-  const result = await executor.execute(concretePlan, doc, options);
-  if (result.status === "completed") {
-    await validator.postValidate(result.changeSet, result.finalDoc);
-  }
-  return result;
 }

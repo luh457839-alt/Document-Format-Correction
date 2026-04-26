@@ -128,6 +128,57 @@ describe("OpenAiStructuredModelGateway", () => {
     expect(requestBodies[1]?.response_format).toBeUndefined();
   });
 
+  it("preserves schema unsupported failures in strict compat mode", async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const gateway = new OpenAiStructuredModelGateway({
+      plannerConfig: {
+        apiKey: "k",
+        baseUrl: "https://mock/v1",
+        model: "m",
+        timeoutMs: 30_000,
+        maxRetries: 0,
+        compatMode: "strict"
+      },
+      fetchImpl: (async (_url, init) => {
+        requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+        return new Response(
+          JSON.stringify({
+            error: "response_format json_schema unsupported"
+          }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }) as typeof fetch
+    });
+
+    await expect(
+      gateway.requestJson({
+        messages: [{ role: "user", content: "return json" }],
+        requestCode: "E_STRUCT_REQUEST",
+        upstreamCode: "E_STRUCT_UPSTREAM",
+        responseCode: "E_STRUCT_RESPONSE",
+        requestLabel: "Structured request",
+        payloadLabel: "Structured payload",
+        schemaUnsupportedCode: "E_STRUCT_SCHEMA_UNSUPPORTED",
+        schemaName: "structured_result",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {}
+        },
+        parseContent: (content) => JSON.parse(content) as Record<string, unknown>
+      })
+    ).rejects.toMatchObject({
+      info: expect.objectContaining({
+        code: "E_STRUCT_SCHEMA_UNSUPPORTED"
+      })
+    });
+
+    expect(requestBodies).toHaveLength(1);
+  });
+
   it("applies request-level timeout control to structured JSON requests", async () => {
     const gateway = new OpenAiStructuredModelGateway({
       plannerConfig: {

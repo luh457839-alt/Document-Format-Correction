@@ -58,6 +58,22 @@ const anchoredDoc: DocumentIR = {
   }
 };
 
+const unwritableParagraphDoc: DocumentIR = {
+  id: "react-unwritable",
+  version: "v1",
+  nodes: [{ id: "p_0_r_0", text: "主标题" }],
+  metadata: {
+    structureIndex: {
+      paragraphs: [
+        { id: "p_0", text: "主标题", role: "heading", headingLevel: 1, runNodeIds: ["p_0_r_0"] },
+        { id: "p_1", text: "空正文段", role: "body", runNodeIds: ["p_1_r_missing"] }
+      ],
+      roleCounts: { heading: 1, body: 1 },
+      paragraphMap: {}
+    }
+  }
+};
+
 function createEnvelope(content: string): string {
   return JSON.stringify({
     choices: [{ message: { content } }]
@@ -584,6 +600,93 @@ describe("LlmReActPlanner.decideNext", () => {
         err.info.message.includes("write_operation requires operation")
     );
     expect(fetchSpy.getBodies()).toHaveLength(3);
+  });
+
+  it("accepts paragraph selectors when filtering still leaves writable document nodes", async () => {
+    const planner = new LlmReActPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: createFetchMock(
+        createEnvelope(
+          JSON.stringify({
+            kind: "act",
+            step: {
+              id: "react_step_1",
+              toolName: "write_operation",
+              readOnly: false,
+              idempotencyKey: "react:1",
+              operation: {
+                id: "op1",
+                type: "set_font_color",
+                targetSelector: {
+                  scope: "paragraph_ids",
+                  paragraphIds: ["p_0", "p_1"]
+                },
+                payload: { font_color: "FF0000" }
+              }
+            }
+          })
+        )
+      )
+    });
+
+    await expect(
+      planner.decideNext({
+        ...baseInput,
+        goal: "部分段落设为红色",
+        doc: unwritableParagraphDoc
+      })
+    ).resolves.toMatchObject({
+      kind: "act",
+      step: {
+        operation: {
+          targetSelector: {
+            scope: "paragraph_ids",
+            paragraphIds: ["p_0", "p_1"]
+          }
+        }
+      }
+    });
+  });
+
+  it("rejects paragraph selectors when filtering removes every writable document node", async () => {
+    const planner = new LlmReActPlanner({
+      config: { apiKey: "k", baseUrl: "https://mock/v1", model: "m" },
+      fetchImpl: createFetchMock(
+        createEnvelope(
+          JSON.stringify({
+            kind: "act",
+            step: {
+              id: "react_step_1",
+              toolName: "write_operation",
+              readOnly: false,
+              idempotencyKey: "react:1",
+              operation: {
+                id: "op1",
+                type: "set_font_color",
+                targetSelector: {
+                  scope: "paragraph_ids",
+                  paragraphIds: ["p_1"]
+                },
+                payload: { font_color: "FF0000" }
+              }
+            }
+          })
+        )
+      )
+    });
+
+    await expect(
+      planner.decideNext({
+        ...baseInput,
+        goal: "空正文段落设为红色",
+        doc: unwritableParagraphDoc
+      })
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof AgentError &&
+        err.info.code === "E_REACT_DECISION_INVALID" &&
+        err.info.message.includes("no writable targets after filtering")
+    );
   });
 
   it("omits response_format when react json schema is disabled", async () => {

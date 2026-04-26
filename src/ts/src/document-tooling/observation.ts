@@ -1,12 +1,10 @@
 import { AgentError } from "../core/errors.js";
 import type { DocumentIR, Tool, ToolExecutionInput, ToolExecutionOutput } from "../core/types.js";
 import { parseDocxToState } from "../tools/docx-observation-tool.js";
-import {
-  observeDocxStateWithPython,
-  type PythonDocxObservationState,
-  type PythonToolClientDeps
+import type {
+  PythonDocxObservationState,
+  PythonToolClientDeps
 } from "../tools/python-tool-client.js";
-import { shouldFallbackToNativeDocxObservation } from "./observation-policy.js";
 
 export interface DocumentObservationDeps extends PythonToolClientDeps {
   pythonObserveDocument?: (
@@ -16,21 +14,29 @@ export interface DocumentObservationDeps extends PythonToolClientDeps {
   nativeObserveDocument?: (docxPath: string) => Promise<PythonDocxObservationState>;
 }
 
-export async function observeDocumentWithFallback(
+export async function parseDocxPackage(
   docxPath: string,
   deps: DocumentObservationDeps = {}
 ): Promise<PythonDocxObservationState> {
-  try {
-    return await (deps.pythonObserveDocument ?? observeDocxStateWithPython)(docxPath, buildPythonOptions(deps));
-  } catch (err) {
-    if (!shouldFallbackToNativeDocxObservation(err)) {
-      throw err;
-    }
-    return await (deps.nativeObserveDocument ?? nativeObserveDocument)(docxPath);
-  }
+  const observe = deps.nativeObserveDocument ?? nativeObserveDocument;
+  return await observe(docxPath);
 }
 
-export function createDocxObservationToolWithFallback(
+export function projectDocxObservation(
+  doc: DocumentIR,
+  observation: PythonDocxObservationState
+): ToolExecutionOutput {
+  return attachObservationToDocument(doc, observation);
+}
+
+export async function observeDocument(
+  docxPath: string,
+  deps: DocumentObservationDeps = {}
+): Promise<PythonDocxObservationState> {
+  return await parseDocxPackage(docxPath, deps);
+}
+
+export function createDocxObservationTool(
   observeDocument: (docxPath: string, options?: PythonToolClientDeps) => Promise<PythonDocxObservationState>,
   options?: PythonToolClientDeps
 ): Tool {
@@ -44,19 +50,9 @@ export function createDocxObservationToolWithFallback(
       validateDocxObservationInput(input);
       const docxPath = String(input.operation?.payload?.docxPath ?? "").trim();
       const observation = await observeDocument(docxPath, options);
-      return attachObservationToDocument(input.doc, observation);
+      return projectDocxObservation(input.doc, observation);
     }
   };
-}
-
-function buildPythonOptions(deps: PythonToolClientDeps): PythonToolClientDeps | undefined {
-  const merged = {
-    pythonBin: deps.pythonBin,
-    runnerPath: deps.runnerPath,
-    timeoutMs: deps.timeoutMs,
-    cwd: deps.cwd
-  };
-  return Object.values(merged).some((value) => value !== undefined) ? merged : undefined;
 }
 
 async function nativeObserveDocument(docxPath: string): Promise<PythonDocxObservationState> {
@@ -84,10 +80,11 @@ function attachObservationToDocument(
   const nextDoc: DocumentIR = structuredClone(doc);
   nextDoc.metadata = {
     ...(nextDoc.metadata ?? {}),
-    docxObservation: observation
+    docxObservation: observation,
+    docxPackageModel: observation.package_model
   };
   return {
     doc: nextDoc,
-    summary: `Observed docx: nodes=${observation.nodes.length}`
+    summary: `Observed docx package: parts=${observation.package_meta.part_count}, inline_nodes=${observation.inline_nodes.length}`
   };
 }

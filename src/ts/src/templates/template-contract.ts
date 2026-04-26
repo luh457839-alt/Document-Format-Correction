@@ -1,6 +1,6 @@
 import { AgentError } from "../core/errors.js";
 
-export const TEMPLATE_CONTRACT_SCHEMA_VERSION = "1.0";
+export const TEMPLATE_CONTRACT_SCHEMA_VERSION = "2.0";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -35,6 +35,88 @@ export interface DerivedSemanticOperation extends JsonRecord {
   relative_spacing?: JsonRecord;
   placement_rules?: JsonRecord;
   language_font_overrides?: OperationBlockLanguageFontOverrides;
+}
+
+export type TemplatePatchSelectorPart =
+  | "document"
+  | "header"
+  | "footer"
+  | "styles"
+  | "numbering"
+  | "settings"
+  | "by_part_path";
+
+export type TemplatePatchSelectorScope =
+  | "paragraph"
+  | "run"
+  | "table"
+  | "row"
+  | "cell"
+  | "section"
+  | "style"
+  | "numbering_level"
+  | "settings_node";
+
+export interface TemplatePatchSelectorMatch extends JsonRecord {
+  paragraph_ids?: string[];
+  block_ids?: string[];
+  style_id?: string;
+  num_id?: string;
+  ilvl?: number;
+  section_index?: number;
+  part_path?: string;
+  xml_path?: string;
+}
+
+export interface TemplatePatchSelector extends JsonRecord {
+  part: TemplatePatchSelectorPart;
+  scope: TemplatePatchSelectorScope;
+  match?: TemplatePatchSelectorMatch;
+}
+
+export type TemplatePatchPrimitiveType =
+  | "set_attr"
+  | "remove_attr"
+  | "set_text"
+  | "remove_node"
+  | "ensure_node"
+  | "replace_node_xml";
+
+export type TemplatePatchAliasType =
+  | "set_run_style"
+  | "set_paragraph_style"
+  | "set_section_layout"
+  | "set_table_style"
+  | "set_table_cell_style"
+  | "set_style_definition"
+  | "set_numbering_level"
+  | "set_settings_flag";
+
+export type TemplatePatchOperationType = TemplatePatchPrimitiveType | TemplatePatchAliasType;
+
+export interface TemplatePatchOperation extends JsonRecord {
+  type: TemplatePatchOperationType;
+  path?: string;
+  name?: string;
+  value?: unknown;
+  xml_tag?: string;
+  attrs?: Record<string, string>;
+  node_xml?: string;
+  text_style?: JsonRecord;
+  paragraph_style?: JsonRecord;
+  table_style?: JsonRecord;
+  cell_style?: JsonRecord;
+  section_layout?: JsonRecord;
+  style_definition?: JsonRecord;
+  numbering_level?: JsonRecord;
+  settings?: JsonRecord;
+  style_id?: string;
+}
+
+export interface TemplatePatchBlock extends JsonRecord {
+  semantic_key: string;
+  selector: TemplatePatchSelector;
+  operations: TemplatePatchOperation[];
 }
 
 export interface DerivedSemanticBlock extends JsonRecord {
@@ -132,7 +214,8 @@ export interface TemplateContract extends JsonRecord {
   semantic_blocks: SemanticBlock[];
   derived_semantics?: DerivedSemanticBlock[];
   layout_rules: LayoutRules;
-  operation_blocks: OperationBlock[];
+  patch_blocks: TemplatePatchBlock[];
+  operation_blocks?: OperationBlock[];
   classification_contract: ClassificationContract;
   validation_policy: ValidationPolicy;
   style_reference?: JsonRecord;
@@ -140,7 +223,16 @@ export interface TemplateContract extends JsonRecord {
 
 export function parseTemplateContract(input: unknown): TemplateContract {
   validateTemplateContract(input);
-  return input;
+  const contract = input as TemplateContract;
+  const normalizedPatchBlocks = Array.isArray(contract.patch_blocks) ? contract.patch_blocks : [];
+  const patchBlocks =
+    normalizedPatchBlocks.length > 0
+      ? normalizedPatchBlocks
+      : (contract.operation_blocks ?? []).map(convertLegacyOperationBlockToPatchBlock);
+  return {
+    ...contract,
+    patch_blocks: patchBlocks
+  };
 }
 
 export function validateTemplateContract(input: unknown): asserts input is TemplateContract {
@@ -259,28 +351,60 @@ export function validateTemplateContract(input: unknown): asserts input is Templ
     }
   }
 
-  const operationBlocks = requireArray(contract.operation_blocks, "operation_blocks");
-  const operationSemanticCounts = new Map<string, number>();
-  for (const [index, rawOperationBlock] of operationBlocks.entries()) {
-    const operationBlock = requireObject(rawOperationBlock, `operation_blocks[${index}]`);
-    const semanticKey = requireNonEmptyString(operationBlock.semantic_key, `operation_blocks[${index}].semantic_key`);
-    ensureSemanticKeyExists(semanticKey, semanticKeySet, "operation_blocks");
-    requireObject(operationBlock.text_style, `operation_blocks[${index}].text_style`);
-    requireObject(operationBlock.paragraph_style, `operation_blocks[${index}].paragraph_style`);
-    validateLanguageFontOverrides(
-      operationBlock.language_font_overrides,
-      `operation_blocks[${index}].language_font_overrides`
+  const rawPatchBlocks = Array.isArray(contract.patch_blocks) ? contract.patch_blocks : [];
+  const rawOperationBlocks = Array.isArray(contract.operation_blocks) ? contract.operation_blocks : [];
+  if (rawPatchBlocks.length === 0 && rawOperationBlocks.length === 0) {
+    throw invalidTemplateContract(
+      "E_TEMPLATE_CONTRACT_INVALID",
+      "template contract requires patch_blocks."
     );
-    operationSemanticCounts.set(semanticKey, (operationSemanticCounts.get(semanticKey) ?? 0) + 1);
   }
 
-  for (const semanticKey of semanticKeySet) {
-    const count = operationSemanticCounts.get(semanticKey) ?? 0;
-    if (count !== 1) {
-      throw invalidTemplateContract(
-        "E_TEMPLATE_CONTRACT_INVALID",
-        `operation_blocks must contain exactly one item for semantic key '${semanticKey}'.`
+  if (rawPatchBlocks.length > 0) {
+    const patchBlocks = requireArray(contract.patch_blocks, "patch_blocks");
+    for (const [index, rawPatchBlock] of patchBlocks.entries()) {
+      const patchBlock = requireObject(rawPatchBlock, `patch_blocks[${index}]`);
+      requireNonEmptyString(patchBlock.semantic_key, `patch_blocks[${index}].semantic_key`);
+      const selector = requireObject(patchBlock.selector, `patch_blocks[${index}].selector`);
+      validatePatchSelector(selector, `patch_blocks[${index}].selector`);
+      const operations = requireArray(patchBlock.operations, `patch_blocks[${index}].operations`);
+      if (operations.length === 0) {
+        throw invalidTemplateContract(
+          "E_TEMPLATE_CONTRACT_INVALID",
+          `patch_blocks[${index}].operations must not be empty.`
+        );
+      }
+      operations.forEach((rawOperation, operationIndex) => {
+        validatePatchOperation(
+          requireObject(rawOperation, `patch_blocks[${index}].operations[${operationIndex}]`),
+          `patch_blocks[${index}].operations[${operationIndex}]`
+        );
+      });
+    }
+  } else {
+    const operationBlocks = requireArray(contract.operation_blocks, "operation_blocks");
+    const operationSemanticCounts = new Map<string, number>();
+    for (const [index, rawOperationBlock] of operationBlocks.entries()) {
+      const operationBlock = requireObject(rawOperationBlock, `operation_blocks[${index}]`);
+      const semanticKey = requireNonEmptyString(operationBlock.semantic_key, `operation_blocks[${index}].semantic_key`);
+      ensureSemanticKeyExists(semanticKey, semanticKeySet, "operation_blocks");
+      requireObject(operationBlock.text_style, `operation_blocks[${index}].text_style`);
+      requireObject(operationBlock.paragraph_style, `operation_blocks[${index}].paragraph_style`);
+      validateLanguageFontOverrides(
+        operationBlock.language_font_overrides,
+        `operation_blocks[${index}].language_font_overrides`
       );
+      operationSemanticCounts.set(semanticKey, (operationSemanticCounts.get(semanticKey) ?? 0) + 1);
+    }
+
+    for (const semanticKey of semanticKeySet) {
+      const count = operationSemanticCounts.get(semanticKey) ?? 0;
+      if (count !== 1) {
+        throw invalidTemplateContract(
+          "E_TEMPLATE_CONTRACT_INVALID",
+          `operation_blocks must contain exactly one item for semantic key '${semanticKey}'.`
+        );
+      }
     }
   }
 
@@ -394,6 +518,154 @@ function validateLanguageFontOverride(input: unknown, path: string): void {
     }
   }
   requireNonEmptyString(override.font_name, `${path}.font_name`);
+}
+
+function validatePatchSelector(input: JsonRecord, path: string): void {
+  const part = requireNonEmptyString(input.part, `${path}.part`);
+  if (!["document", "header", "footer", "styles", "numbering", "settings", "by_part_path"].includes(part)) {
+    throw invalidTemplateContract("E_TEMPLATE_CONTRACT_INVALID", `${path}.part '${part}' is not supported.`);
+  }
+  const scope = requireNonEmptyString(input.scope, `${path}.scope`);
+  if (
+    !["paragraph", "run", "table", "row", "cell", "section", "style", "numbering_level", "settings_node"].includes(
+      scope
+    )
+  ) {
+    throw invalidTemplateContract("E_TEMPLATE_CONTRACT_INVALID", `${path}.scope '${scope}' is not supported.`);
+  }
+  if (input.match !== undefined) {
+    const match = requireObject(input.match, `${path}.match`);
+    if (match.paragraph_ids !== undefined) {
+      requireStringArray(match.paragraph_ids, `${path}.match.paragraph_ids`, { allowEmpty: false });
+    }
+    if (match.block_ids !== undefined) {
+      requireStringArray(match.block_ids, `${path}.match.block_ids`, { allowEmpty: false });
+    }
+    if (match.style_id !== undefined) {
+      requireNonEmptyString(match.style_id, `${path}.match.style_id`);
+    }
+    if (match.num_id !== undefined) {
+      requireNonEmptyString(match.num_id, `${path}.match.num_id`);
+    }
+    if (match.ilvl !== undefined && (!Number.isInteger(match.ilvl) || Number(match.ilvl) < 0)) {
+      throw invalidTemplateContract("E_TEMPLATE_CONTRACT_INVALID", `${path}.match.ilvl must be a non-negative integer.`);
+    }
+    if (match.section_index !== undefined && (!Number.isInteger(match.section_index) || Number(match.section_index) < 0)) {
+      throw invalidTemplateContract(
+        "E_TEMPLATE_CONTRACT_INVALID",
+        `${path}.match.section_index must be a non-negative integer.`
+      );
+    }
+    if (match.part_path !== undefined) {
+      requireNonEmptyString(match.part_path, `${path}.match.part_path`);
+    }
+    if (match.xml_path !== undefined) {
+      requireNonEmptyString(match.xml_path, `${path}.match.xml_path`);
+    }
+  }
+}
+
+function validatePatchOperation(input: JsonRecord, path: string): void {
+  const type = requireNonEmptyString(input.type, `${path}.type`);
+  if (
+    ![
+      "set_attr",
+      "remove_attr",
+      "set_text",
+      "remove_node",
+      "ensure_node",
+      "replace_node_xml",
+      "set_run_style",
+      "set_paragraph_style",
+      "set_section_layout",
+      "set_table_style",
+      "set_table_cell_style",
+      "set_style_definition",
+      "set_numbering_level",
+      "set_settings_flag"
+    ].includes(type)
+  ) {
+    throw invalidTemplateContract("E_TEMPLATE_CONTRACT_INVALID", `${path}.type '${type}' is not supported.`);
+  }
+
+  if (type === "set_attr" || type === "remove_attr") {
+    requireNonEmptyString(input.name, `${path}.name`);
+  }
+  if (type === "ensure_node") {
+    requireNonEmptyString(input.xml_tag, `${path}.xml_tag`);
+  }
+  if (type === "replace_node_xml") {
+    requireNonEmptyString(input.node_xml, `${path}.node_xml`);
+  }
+  if (type === "set_run_style") {
+    requireObject(input.text_style, `${path}.text_style`);
+  }
+  if (type === "set_paragraph_style") {
+    if (input.paragraph_style === undefined && input.style_id === undefined) {
+      throw invalidTemplateContract(
+        "E_TEMPLATE_CONTRACT_INVALID",
+        `${path} requires paragraph_style or style_id for set_paragraph_style.`
+      );
+    }
+  }
+  if (type === "set_section_layout") {
+    requireObject(input.section_layout, `${path}.section_layout`);
+  }
+  if (type === "set_table_style") {
+    requireObject(input.table_style, `${path}.table_style`);
+  }
+  if (type === "set_table_cell_style") {
+    requireObject(input.cell_style, `${path}.cell_style`);
+  }
+  if (type === "set_style_definition") {
+    requireObject(input.style_definition, `${path}.style_definition`);
+  }
+  if (type === "set_numbering_level") {
+    requireObject(input.numbering_level, `${path}.numbering_level`);
+  }
+  if (type === "set_settings_flag") {
+    requireObject(input.settings, `${path}.settings`);
+  }
+}
+
+function convertLegacyOperationBlockToPatchBlock(block: OperationBlock): TemplatePatchBlock {
+  const operations: TemplatePatchOperation[] = [];
+  if (Object.keys(block.paragraph_style ?? {}).length > 0) {
+    operations.push({
+      type: "set_paragraph_style",
+      paragraph_style: block.paragraph_style
+    });
+  }
+  if (Object.keys(block.text_style ?? {}).length > 0) {
+    operations.push({
+      type: "set_run_style",
+      text_style: block.text_style
+    });
+  }
+  if ((block.relative_spacing as Record<string, unknown> | undefined)?.before_pt !== undefined) {
+    operations.push({
+      type: "set_paragraph_style",
+      paragraph_style: {
+        space_before_pt: (block.relative_spacing as Record<string, unknown>).before_pt
+      }
+    });
+  }
+  if ((block.relative_spacing as Record<string, unknown> | undefined)?.after_pt !== undefined) {
+    operations.push({
+      type: "set_paragraph_style",
+      paragraph_style: {
+        space_after_pt: (block.relative_spacing as Record<string, unknown>).after_pt
+      }
+    });
+  }
+  return {
+    semantic_key: block.semantic_key,
+    selector: {
+      part: "document",
+      scope: "paragraph"
+    },
+    operations
+  };
 }
 
 function requireObject(value: unknown, path: string): JsonRecord {

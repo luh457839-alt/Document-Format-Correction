@@ -104,7 +104,7 @@ export class OpenAiStructuredModelGateway implements StructuredModelGateway {
         }
       });
     } catch (err) {
-      if (!shouldFallbackFromSchemaRequest(err, input.schemaUnsupportedCode)) {
+      if (!shouldFallbackFromSchemaRequest(err, input.schemaUnsupportedCode) || config.compatMode === "strict") {
         throw err;
       }
       return await requestPlainJson(client, input, timeoutControl.timeoutMs, {

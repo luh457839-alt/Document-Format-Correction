@@ -1,140 +1,124 @@
-# fixed-template-contract.sample.json 模板编写规范
+# fixed-template-contract.sample.json Patch DSL 示例说明
 
-## 1. 当前标准模板定位
+## 1. 当前 sample 的定位
 
-`fixed-template-contract.sample.json` 现在表示“默认放行模板”，不是“默认严格模板”。
+`fixed-template-contract.sample.json` 现在是一份面向模板子系统 `2.0` 契约的 Patch DSL 示例。
 
-它和 `templates/test_1.json` 一样遵循“默认不校验”的运行原则；其中 `templates/test_1.json` 已进一步收敛为仅保留格式设置的纯格式模板：
+这份示例的目标有两个：
+
+- 说明固定模板在新执行模型下应该怎样写 `patch_blocks`。
+- 给模板作者一个可裁剪的结构语义母版，同时保留默认放行策略。
+
+它仍然遵循宽松默认值：
 
 - 默认不做结构性校验。
 - 默认不做格式性校验。
 - 默认允许空文本。
-- 语义集合主要用于分类、写入映射和未来可选校验，不代表默认拦截条件。
+- 用户上传任何格式的文档都允许通过。
 
-这意味着用户上传任何格式的文档都允许通过，包括：
+语义集合主要用于分类、写入映射和未来可选校验，而不是默认把所有不规范文档拦下来。
 
-- 只有标题没有正文。
-- 没有主标题。
-- 表格空单元格。
-- 空白段较多。
-- 顺序混乱。
-- 编号不匹配。
-- 样式不匹配。
+## 2. 主契约已经切到 `patch_blocks`
 
-只有用户明确要求时，才应切换到启用校验的模板或策略。
+在 `schema_version = "2.0"` 下，`patch_blocks` 是唯一主写入契约。
 
-## 2. 默认放行与显式校验
+每个 block 都由两部分组成：
 
-统一总开关位于：
+- `selector`：声明 patch 要落到文档的哪个 part、哪个 scope。
+- `operations`：声明要执行的样式 alias 或 XML primitive。
 
-- `validation_policy.enforce_validation`
+这份 sample 里同时展示了两类 block：
 
-固定语义如下：
+- 段落级 block：例如 `document_title`、`body_paragraph`、`table_text`。
+- 文档级 block：例如 `document_page_layout`，通过 `document + section` selector 修改纸张和页边距。
 
-- `true`：启用模板校验。
-- `false` 或缺失：不启用模板校验。
+`operation_blocks` 仍然只是兼容输入，不再作为新示例的主断言对象。
 
-当 `enforce_validation !== true` 时：
+## 3. `selector + operations` 怎么理解
 
-- 不因必填语义缺失失败。
-- 不因 occurrence 上下限失败。
-- 不因 conflict、unmatched、顺序、编号、样式失败。
-- 不生成 `body_paragraph` 编号前缀 warning。
+模板里的 `selector` 负责定位 patch 作用范围。当前公开契约支持的主路径包括：
 
-细分开关只在 `enforce_validation=true` 时才有意义：
+- `document / paragraph`
+- `document / run`
+- `document / section`
+- `styles / style`
+- `numbering / numbering_level`
+- `settings / settings_node`
+- `by_part_path / *`
 
-- `require_all_required_semantics`
-- `reject_conflicting_matches`
-- `reject_order_violations`
-- `reject_style_violations`
-- `reject_unmatched_when_required`
+`operations` 则负责描述修改动作。现在可稳定使用的几类改动包括：
 
-旧模板即使把这些字段写成 `true`，只要没有显式设置 `enforce_validation=true`，运行时也不会拦截。
+- `set_run_style`：修改 run 级字体、字号、颜色、粗斜体等。
+- `set_paragraph_style`：修改段落对齐、行距、首行缩进、段前段后间距。
+- `set_section_layout`：修改纸张与页边距。
+- `set_style_definition`：修改样式定义 part。
+- `set_numbering_level`：修改编号级别定义。
+- `set_settings_flag`：修改文档 settings 节点。
+- `set_attr` / `remove_attr` / `set_text` / `remove_node` / `ensure_node` / `replace_node_xml`：直接做 XML 级 patch。
 
-## 3. 当前标准语义集合
+这也是这次重构真正扩出来的能力边界：不再只停留在“按段落写样式”，而是可以对文档包内多个 part 做稳定 patch。
 
-标准模板仍保留以下原子语义，用于覆盖解析器当前稳定可见的 paragraph 结构类型：
+## 4. 这份 sample 覆盖了哪些文档改动
 
-- `cover_image`
-- `document_title`
-- `heading_level_1`
-- `heading_level_2`
-- `heading_level_3`
-- `body_paragraph`
-- `list_item_level_0`
-- `list_item_level_1`
-- `table_text`
-- `blank_or_unknown`
+示例当前直接覆盖的改动类型如下：
 
-这里要明确：
+- 标题、正文、各级标题、列表、表格文本的段落级样式调整。
+- 图片段落的对齐方式调整。
+- 文档纸张和页边距调整。
+- 业务派生语义的聚合与细分写入视图。
 
-- `document_title` 仍属于标准原子语义集合，但默认不要求每个文档实例命中。
-- `body_paragraph` 仍可作为正文映射语义存在，但默认不再承担“缺失即失败”的责任。
-- `heading_level_n` 表示 DOCX 原生标题层级，不表示固定编号形态。
+如果继续扩展同一套 DSL，还可以支持：
 
-## 4. 规则字段与示例字段
+- 样式表定义更新。
+- 编号级别定义更新。
+- settings part 开关写入。
+- 针对任意 XML 节点的精确属性或节点替换。
 
-先固定一个容易误用的边界：
+## 5. 为什么还保留 `style_reference`
 
-- `examples` / `negative_examples` 是示例字段，用于提供分类参考信号。
-- `numbering_patterns` 是规则字段，用于对已完成分类的段落做可选校验。
-- `numbering_patterns` 不参与 paragraph owner 决策，不能代替标题、正文、列表的归属判断。
+`style_reference` 在这里仍然保留，但它的角色已经收敛为说明性元数据：
 
-默认放行模式下，即使配置了 `numbering_patterns`，也不会据此拦截文档。只有显式开启 `enforce_validation=true` 后，编号规则才会参与校验。
+- 用来记录页面规格和人工可读的格式说明。
+- 用来辅助文档、模板评审和 LLM 生成。
+- 不再等同于最终执行真源。
 
-## 5. 语义层设计
+真正参与执行的是 `patch_blocks`。
 
-sample 继续区分两层语义：
+## 6. `semantic_blocks`、`derived_semantics` 和 `patch_blocks` 的边界
 
-- `semantic_blocks`：原子语义，负责 paragraph 级单 owner 归属。
-- `derived_semantics`：派生语义，负责聚合或细分业务语义。
+三者的分工现在更清晰：
 
-推荐理解方式：
+- `semantic_blocks`：负责 paragraph 级分类覆盖。
+- `derived_semantics`：负责业务语义聚合或细分，不改变原子 owner。
+- `patch_blocks`：负责真正可执行的 patch DSL。
 
-- 原子语义负责“这段文本在结构上属于什么”。
-- 派生语义负责“这段文本在业务上应如何被组合或细分”。
+因此，不要把示例字段当规则，也不要把分类字段和写入字段混写在一起。
 
-因此，标准模板仍建议先按结构事实建模，再按业务解释做派生，而不是直接用业务章节名替代结构语义。
+这里的边界仍然要明确：
 
-## 6. `blank_or_unknown` 与空文本
+- `examples` / `negative_examples` 是示例字段。
+- `position_hints`、`style_hints`、`occurrence` 是规则字段。
+- `selector`、`operations` 是执行字段。
 
-标准模板中的宽松策略还体现在：
+## 7. mixed-language 字体覆盖怎么处理
 
-- 所有关键 `style_hints` 默认都允许 `allow_empty_text: true`。
-- `blank_or_unknown` 继续吸收空白段、装饰段和 `unknown` bucket。
-- `blank_or_unknown` 不是万能桶，不能替代表格、列表、正文或图片的结构覆盖。
+当前主契约已经切到 `patch_blocks`，但 mixed-language run 拆分后的 `language_font_overrides` 仍属于兼容层能力。
 
-对 `cover_image` 仍保留这些结构约束：
+这意味着：
 
-- `require_image=true`
-- `must_not_be_in_table=true`
+- 新模板优先用 `patch_blocks` 表达主路径写入。
+- 如果业务必须对中英文 run 分别覆写字体，当前仍可通过兼容输入追加 run 级 patch。
+- 这份 public sample 不再把兼容字段当主契约展示。
 
-但它默认不再依赖文首位置约束去拦截文档。
+## 8. 为什么仍然保持默认放行
 
-## 7. 给 LLM 或人工编写模板的建议
+这份示例是“新契约下的标准写法样板”，不是“默认严格模板”。
 
-建议顺序：
+因此仍保持：
 
-1. 先确认目标文档会出现哪些 paragraph 结构类型。
-2. 用原子 `semantic_blocks` 覆盖这些结构类型。
-3. 为每个原子语义补齐 `semantic_rules` 与 `operation_blocks`。
-4. 默认保持放行策略，不把缺失、顺序、编号、样式直接写成失败条件。
-5. 只有在业务明确要求拦截时，才设置 `enforce_validation=true` 并补齐严格规则。
-6. 再按需要添加 `derived_semantics`。
+- 缺主标题允许通过。
+- 缺图片段落允许通过。
+- 缺表格文本允许通过。
+- 存在空白段或未知段落时允许通过。
 
-## 8. 何时切换到严格模式
-
-只有下面这类场景才建议显式启用校验：
-
-- 用户明确要求“必须有标题/正文/固定顺序”。
-- 用户明确要求“编号不对就报错”。
-- 用户明确要求“样式不符合模板就阻断”。
-- 业务确实需要把 unmatched 或 conflict 当成失败。
-
-启用方式：
-
-- 设置 `validation_policy.enforce_validation=true`
-- 再按需打开各个细分开关
-- 再根据业务补充 occurrence、position、numbering、style 等规则
-
-如果没有这类明确要求，就继续使用默认放行模板。
+只有用户明确要求严格模式时，才建议打开 `validation_policy.enforce_validation = true`，再继续补顺序、数量、样式和编号拦截规则。

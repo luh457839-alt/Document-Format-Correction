@@ -1,5 +1,4 @@
 import type { DocumentIR } from "../core/types.js";
-import { AgentError } from "../core/errors.js";
 import { createDocumentToolingFacade } from "../document-tooling/facade.js";
 import type { PythonDocxObservationState } from "../tools/python-tool-client.js";
 
@@ -12,12 +11,19 @@ export interface StructuredParagraph {
   styleName?: string;
   runNodeIds: string[];
   inTable: boolean;
+  partPath?: string;
 }
 
 export interface DocumentStructureIndex {
   paragraphs: StructuredParagraph[];
   paragraphMap: Record<string, StructuredParagraph>;
   roleCounts: Record<string, number>;
+  projectionDiagnostics?: {
+    paragraphsWithoutProjectedRunNodes: string[];
+    paragraphsWithoutProjectedRunNodeCount: number;
+    totalProjectedRunNodeCount: number;
+    totalStructuredRunNodeCount: number;
+  };
 }
 
 export interface EmphasisFlags {
@@ -47,19 +53,14 @@ export async function hydrateDocumentFromInputDocx(document: DocumentIR): Promis
 
   const state = await createDocumentToolingFacade().observeDocument(inputDocxPath.trim());
   const nodes = documentStateToNodes(state);
-  if (nodes.length === 0) {
-    throw new AgentError({
-      code: "E_DOCX_EMPTY",
-      message: "Loaded input DOCX has no text nodes to edit.",
-      retryable: false
-    });
-  }
 
   return {
     ...document,
     nodes,
     metadata: {
       ...(document.metadata ?? {}),
+      docxObservation: state,
+      docxPackageModel: state.package_model,
       sourceDocumentMeta: state.document_meta,
       structureIndex: buildStructureIndex(state)
     }
@@ -67,6 +68,26 @@ export async function hydrateDocumentFromInputDocx(document: DocumentIR): Promis
 }
 
 export function documentStateToNodes(state: PythonDocxObservationState): DocumentIR["nodes"] {
+  if (Array.isArray(state.inline_nodes) && state.inline_nodes.length > 0) {
+    const projectedNodes: DocumentIR["nodes"] = [];
+    for (const node of state.inline_nodes) {
+      if (node.node_type !== "text") {
+        continue;
+      }
+      const id = node.id.trim();
+      const text = (node.text ?? "").trim();
+      if (!id || !text) {
+        continue;
+      }
+      projectedNodes.push({
+        id,
+        text,
+        style: node.style ? { ...node.style } : undefined
+      });
+    }
+    return projectedNodes;
+  }
+
   const nodes: DocumentIR["nodes"] = [];
 
   const visitParagraph = (
@@ -126,7 +147,20 @@ export function documentStateToNodes(state: PythonDocxObservationState): Documen
 }
 
 export function buildStructureIndex(state: PythonDocxObservationState): DocumentStructureIndex {
-  const paragraphs = Array.isArray(state.paragraphs) && state.paragraphs.length > 0
+  const projectedParagraphs = state.structure_index?.paragraphs;
+  const paragraphs = Array.isArray(projectedParagraphs) && projectedParagraphs.length > 0
+    ? projectedParagraphs.map((paragraph) => ({
+        id: paragraph.id,
+        text: paragraph.text,
+        role: paragraph.role,
+        headingLevel: paragraph.heading_level,
+        listLevel: paragraph.list_level,
+        styleName: paragraph.style_name,
+        runNodeIds: [...paragraph.run_ids],
+        inTable: paragraph.in_table,
+        partPath: paragraph.part_path
+      }))
+    : Array.isArray(state.paragraphs) && state.paragraphs.length > 0
     ? state.paragraphs.map((paragraph) => ({
         id: paragraph.id,
         text: paragraph.text,
@@ -135,7 +169,8 @@ export function buildStructureIndex(state: PythonDocxObservationState): Document
         listLevel: paragraph.list_level,
         styleName: paragraph.style_name,
         runNodeIds: [...paragraph.run_ids],
-        inTable: paragraph.in_table
+        inTable: paragraph.in_table,
+        partPath: paragraph.part_path
       }))
     : deriveParagraphsFromNodes(state);
 
@@ -147,11 +182,22 @@ export function buildStructureIndex(state: PythonDocxObservationState): Document
     }
     roleCounts[paragraph.role] = (roleCounts[paragraph.role] ?? 0) + 1;
   }
+  const projectedRunNodeIds = new Set(documentStateToNodes(state).map((node) => node.id));
+  const structuredRunNodeIds = new Set(paragraphs.flatMap((paragraph) => paragraph.runNodeIds));
+  const paragraphsWithoutProjectedRunNodes = paragraphs
+    .filter((paragraph) => !paragraph.runNodeIds.some((runNodeId) => projectedRunNodeIds.has(runNodeId)))
+    .map((paragraph) => paragraph.id);
 
   return {
     paragraphs,
     paragraphMap,
-    roleCounts
+    roleCounts,
+    projectionDiagnostics: {
+      paragraphsWithoutProjectedRunNodes,
+      paragraphsWithoutProjectedRunNodeCount: paragraphsWithoutProjectedRunNodes.length,
+      totalProjectedRunNodeCount: projectedRunNodeIds.size,
+      totalStructuredRunNodeCount: structuredRunNodeIds.size
+    }
   };
 }
 

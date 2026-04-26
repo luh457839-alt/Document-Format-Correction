@@ -1,44 +1,18 @@
-import { AgentError } from "../core/errors.js";
 import type { DocumentIR, NodeSelector, Plan, PlanStep } from "../core/types.js";
-import type { DocumentStructureIndex, StructuredParagraph } from "./document-state.js";
+import {
+  analyzeSelectorTargets as analyzeSelectorTargetsWithPipeline,
+  bindWriteIntentToOperations,
+  resolveSelectorTargets as resolveSelectorTargetsWithPipeline
+} from "../document-execution/unified-write-pipeline.js";
+
+export type { SelectorTargetAnalysis } from "../document-execution/unified-write-pipeline.js";
 
 export function resolveSelectorTargets(doc: DocumentIR, selector: NodeSelector): string[] {
-  if (selector.scope === "all_text") {
-    return doc.nodes.map((node) => node.id);
-  }
+  return resolveSelectorTargetsWithPipeline(doc, selector);
+}
 
-  const structure = readStructureIndex(doc);
-  if (!structure) {
-    return [];
-  }
-
-  let paragraphs: StructuredParagraph[] = [];
-  switch (selector.scope) {
-    case "body":
-      paragraphs = structure.paragraphs.filter((paragraph) => paragraph.role === "body");
-      break;
-    case "heading":
-      paragraphs = structure.paragraphs.filter(
-        (paragraph) =>
-          paragraph.role === "heading" &&
-          (selector.headingLevel === undefined || paragraph.headingLevel === selector.headingLevel)
-      );
-      break;
-    case "list_item":
-      paragraphs = structure.paragraphs.filter((paragraph) => paragraph.role === "list_item");
-      break;
-    case "paragraph_ids": {
-      const wanted = new Set(selector.paragraphIds ?? []);
-      paragraphs = structure.paragraphs.filter((paragraph) => wanted.has(paragraph.id));
-      break;
-    }
-    default:
-      paragraphs = [];
-      break;
-  }
-
-  const targetIds = new Set(paragraphs.flatMap((paragraph) => paragraph.runNodeIds));
-  return doc.nodes.map((node) => node.id).filter((nodeId) => targetIds.has(nodeId));
+export function analyzeSelectorTargets(doc: DocumentIR, selector: NodeSelector) {
+  return analyzeSelectorTargetsWithPipeline(doc, selector);
 }
 
 export function expandPlanSelectors(plan: Plan, doc: DocumentIR): Plan {
@@ -51,55 +25,30 @@ export function expandPlanSelectors(plan: Plan, doc: DocumentIR): Plan {
       continue;
     }
 
-    const targetIds = resolveSelectorTargets(doc, selector);
-    if (targetIds.length === 0) {
-      throw new AgentError({
-        code: "E_SELECTOR_TARGETS_EMPTY",
-        message: `Selector ${describeSelector(selector)} matched no document nodes.`,
-        retryable: false
-      });
-    }
+    const operations = bindWriteIntentToOperations(doc, {
+      id: step.operation.id,
+      type: step.operation.type,
+      payload: step.operation.payload,
+      target: {
+        kind: "selector",
+        selector
+      }
+    });
 
-    if (targetIds.length === 1) {
+    if (operations.length === 1) {
       expandedSteps.push({
         ...step,
-        operation: {
-          ...step.operation,
-          targetNodeId: targetIds[0],
-          targetSelector: undefined,
-          sourceTargetSelector: step.operation.targetSelector
-        }
-      });
-      continue;
-    }
-
-    if (isBatchableWriteOperation(step)) {
-      expandedSteps.push({
-        ...step,
-        operation: {
-          ...step.operation,
-          targetNodeId: undefined,
-          targetNodeIds: targetIds,
-          targetSelector: undefined,
-          sourceTargetSelector: step.operation.targetSelector
-        }
+        operation: operations[0]
       });
       continue;
     }
 
     expandedSteps.push(
-      ...targetIds.map((targetId, index) => ({
+      ...operations.map((operation, index) => ({
         ...step,
         id: `${step.id}__${index + 1}`,
         idempotencyKey: `${step.idempotencyKey}::${index + 1}`,
-        operation: {
-          ...step.operation!,
-          id: `${step.operation!.id}__${index + 1}`,
-          targetNodeId: targetId,
-          targetNodeIds: undefined,
-          targetSelector: undefined,
-          sourceTargetSelector: step.operation!.targetSelector
-        }
+        operation
       }))
     );
   }
@@ -108,33 +57,4 @@ export function expandPlanSelectors(plan: Plan, doc: DocumentIR): Plan {
     ...plan,
     steps: expandedSteps
   };
-}
-
-function isBatchableWriteOperation(step: PlanStep): boolean {
-  if (step.toolName !== "write_operation" || !step.operation) {
-    return false;
-  }
-  return step.operation.type !== "merge_paragraph" && step.operation.type !== "split_paragraph";
-}
-
-function readStructureIndex(doc: DocumentIR): DocumentStructureIndex | undefined {
-  const structureIndex = doc.metadata?.structureIndex;
-  if (!structureIndex || typeof structureIndex !== "object") {
-    return undefined;
-  }
-  const candidate = structureIndex as Partial<DocumentStructureIndex>;
-  if (!Array.isArray(candidate.paragraphs)) {
-    return undefined;
-  }
-  return candidate as DocumentStructureIndex;
-}
-
-function describeSelector(selector: NodeSelector): string {
-  if (selector.scope === "heading" && selector.headingLevel !== undefined) {
-    return `heading(level=${selector.headingLevel})`;
-  }
-  if (selector.scope === "paragraph_ids") {
-    return `paragraph_ids(${(selector.paragraphIds ?? []).join(",")})`;
-  }
-  return selector.scope;
 }

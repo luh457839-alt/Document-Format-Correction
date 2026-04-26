@@ -43,6 +43,32 @@ function buildGatewayFromContent(content: unknown, choice: Record<string, unknow
   );
 }
 
+function createSequentialFetchSpy(
+  responses: Array<{ payload: string; status?: number }>
+): {
+  fetchImpl: typeof fetch;
+  getBodies: () => Record<string, unknown>[];
+} {
+  const requestBodies: Record<string, unknown>[] = [];
+  let index = 0;
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof init?.body === "string") {
+      requestBodies.push(JSON.parse(init.body) as Record<string, unknown>);
+    }
+    const response = responses[Math.min(index, responses.length - 1)];
+    index += 1;
+    return new Response(response.payload, {
+      status: response.status ?? 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }) as typeof fetch;
+
+  return {
+    fetchImpl,
+    getBodies: () => requestBodies
+  };
+}
+
 async function expectAgentError(
   run: () => Promise<unknown>,
   expectedCode: string,
@@ -620,6 +646,167 @@ describe("LlmAgentModelGateway.decideTurn", () => {
     });
 
     expect(requestBodies[0]?.response_format).toBeUndefined();
+  });
+
+  it("defaults deepseek planner requests to plain json in compat auto mode", async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const gateway = new LlmAgentModelGateway({
+      chatConfig: baseConfig,
+      plannerConfig: {
+        apiKey: "test-key",
+        baseUrl: "https://api.deepseek.com/v1",
+        model: "deepseek-v4-flash"
+      },
+      fetchImpl: async (_url, init) => {
+        requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    ...baseTurnDecision
+                  })
+                }
+              }
+            ]
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+    });
+
+    await gateway.decideTurn({
+      session: emptySession,
+      userInput: "你好"
+    });
+
+    expect(requestBodies).toHaveLength(1);
+    expect(requestBodies[0]?.response_format).toBeUndefined();
+  });
+
+  it("falls back once without response_format when upstream rejects turn-decision json_schema", async () => {
+    const fetchSpy = createSequentialFetchSpy([
+      {
+        payload: JSON.stringify({
+          error: {
+            message: "response_format.json_schema is not supported by this model"
+          }
+        }),
+        status: 400
+      },
+      {
+        payload: JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  ...baseTurnDecision
+                })
+              }
+            }
+          ]
+        })
+      }
+    ]);
+    const gateway = new LlmAgentModelGateway({
+      chatConfig: baseConfig,
+      plannerConfig: {
+        ...baseConfig,
+        useJsonSchema: true,
+        compatMode: "auto"
+      },
+      fetchImpl: fetchSpy.fetchImpl
+    });
+
+    await expect(
+      gateway.decideTurn({
+        session: emptySession,
+        userInput: "你好"
+      })
+    ).resolves.toEqual({
+      ...baseTurnDecision
+    });
+
+    const requestBodies = fetchSpy.getBodies();
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]?.response_format).toMatchObject({ type: "json_schema" });
+    expect(requestBodies[1]?.response_format).toBeUndefined();
+  });
+
+  it("fails with a dedicated schema compatibility error in strict mode", async () => {
+    const gateway = new LlmAgentModelGateway({
+      chatConfig: baseConfig,
+      plannerConfig: {
+        ...baseConfig,
+        useJsonSchema: true,
+        compatMode: "strict"
+      },
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "response_format.json_schema is not supported by this model"
+            }
+          }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" }
+          }
+        )
+    });
+
+    await expectAgentError(
+      async () =>
+        await gateway.decideTurn({
+          session: emptySession,
+          userInput: "你好"
+        }),
+      "E_AGENT_MODEL_SCHEMA_UNSUPPORTED",
+      "response_format json_schema"
+    );
+  });
+
+  it("surfaces fallback failure context when plain-json retry also fails", async () => {
+    const gateway = new LlmAgentModelGateway({
+      chatConfig: baseConfig,
+      plannerConfig: {
+        ...baseConfig,
+        useJsonSchema: true,
+        compatMode: "auto"
+      },
+      fetchImpl: createSequentialFetchSpy([
+        {
+          payload: JSON.stringify({
+            error: {
+              message: "response_format.json_schema is not supported by this model"
+            }
+          }),
+          status: 400
+        },
+        {
+          payload: JSON.stringify({
+            error: {
+              message: "upstream overloaded"
+            }
+          }),
+          status: 502
+        }
+      ]).fetchImpl
+    });
+
+    await expectAgentError(
+      async () =>
+        await gateway.decideTurn({
+          session: emptySession,
+          userInput: "你好"
+        }),
+      "E_AGENT_MODEL_SCHEMA_FALLBACK_FAILED",
+      "without response_format"
+    );
   });
 
   it("turns aborted requests into an actionable timeout hint", async () => {

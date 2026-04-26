@@ -43,7 +43,7 @@ describe("template cli", () => {
           id: "official_doc_body",
           name: "公文正文模板",
           version: "1.0.0",
-          schema_version: "1.0"
+          schema_version: "2.0"
         },
         observation_summary: {
           document_meta: {
@@ -87,12 +87,16 @@ describe("template cli", () => {
           }
         ],
         execution_plan: [],
+        patch_plan: [],
         write_plan: [],
         execution_result: {
           applied: true,
           output_docx_path: "D:/docs/sample.template-output.docx",
           change_summary: "0 change(s) applied",
           artifacts: {
+            patch_set_count: 0,
+            patch_target_count: 0,
+            patch_part_paths: [],
             write_operation_count: 0,
             executed_step_count: 0,
             materialized: true,
@@ -136,6 +140,7 @@ describe("template cli", () => {
       "validation_result",
       "warnings",
       "execution_plan",
+      "patch_plan",
       "write_plan",
       "execution_result"
     ]);
@@ -174,7 +179,7 @@ describe("template cli", () => {
           id: "official_doc_body",
           name: "公文正文模板",
           version: "1.0.0",
-          schema_version: "1.0"
+          schema_version: "2.0"
         },
         observation_summary: {
           document_meta: {
@@ -240,6 +245,7 @@ describe("template cli", () => {
           ]
         },
         execution_plan: [],
+        patch_plan: [],
         write_plan: [],
         execution_result: {
           applied: false,
@@ -325,7 +331,7 @@ describe("template cli", () => {
           id: "official_doc_body",
           name: "公文正文模板",
           version: "1.0.0",
-          schema_version: "1.0"
+          schema_version: "2.0"
         },
         observation_summary: {
           document_meta: {
@@ -366,6 +372,7 @@ describe("template cli", () => {
           issues: []
         },
         execution_plan: [],
+        patch_plan: [],
         write_plan: [],
         execution_result: {
           applied: true,
@@ -436,7 +443,7 @@ describe("template cli", () => {
           id: "official_doc_body",
           name: "公文正文模板",
           version: "1.0.0",
-          schema_version: "1.0"
+          schema_version: "2.0"
         },
         stage_timings_ms: {
           observation_ms: 5,
@@ -493,6 +500,7 @@ describe("template cli", () => {
           issues: []
         },
         execution_plan: [],
+        patch_plan: [],
         write_plan: [],
         execution_result: {
           applied: true,
@@ -558,7 +566,7 @@ describe("template cli", () => {
           id: "official_doc_body",
           name: "公文正文模板",
           version: "1.0.0",
-          schema_version: "1.0"
+          schema_version: "2.0"
         },
         observation_summary: {
           document_meta: {
@@ -601,6 +609,7 @@ describe("template cli", () => {
           ]
         },
         execution_plan: [],
+        patch_plan: [],
         write_plan: [],
         execution_result: {
           applied: false,

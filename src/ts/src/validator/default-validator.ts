@@ -1,5 +1,6 @@
 import { AgentError } from "../core/errors.js";
 import type { ChangeSet, DocumentIR, Plan, Validator } from "../core/types.js";
+import { compileOperationToPatchSet } from "../tools/docx-patching.js";
 
 export class DefaultValidator implements Validator {
   async preValidate(plan: Plan, doc: DocumentIR): Promise<void> {
@@ -35,10 +36,11 @@ export class DefaultValidator implements Validator {
         step.operation.type !== "set_page_layout" &&
         !step.operation.targetNodeId &&
         !step.operation.targetNodeIds?.length &&
-        !step.operation.targetSelector
+        !step.operation.targetSelector &&
+        !step.operation.patchTargetIds?.length
       ) {
         throw invalidPlan(
-          `write_operation step '${step.id}' requires operation.targetNodeId or operation.targetNodeIds or operation.targetSelector.`
+          `write_operation step '${step.id}' requires operation.targetNodeId or operation.targetNodeIds or operation.targetSelector or operation.patchTargetIds.`
         );
       }
       if (step.operation.targetNodeId) {
@@ -56,6 +58,17 @@ export class DefaultValidator implements Validator {
       }
       if (isPayloadSemanticallyEmpty(step.operation.type, step.operation.payload)) {
         throw invalidPlan(`write_operation step '${step.id}' has an empty or non-executable payload.`);
+      }
+      try {
+        const compiled = compileOperationToPatchSet(doc, step.operation);
+        if (compiled.patchSet.operations.length === 0) {
+          throw invalidPlan(`write_operation step '${step.id}' compiled to an empty patch set.`);
+        }
+      } catch (err) {
+        if (err instanceof AgentError) {
+          throw invalidPlan(`write_operation step '${step.id}' is not patch-compilable: ${err.info.message}`);
+        }
+        throw err;
       }
     }
   }
@@ -140,8 +153,8 @@ function isPayloadSemanticallyEmpty(type: string, payload: Record<string, unknow
   }
   if (type === "set_paragraph_spacing") {
     return (
-      !hasPositiveNumber(payload, ["before_pt", "beforePt", "space_before_pt", "spaceBeforePt"]) &&
-      !hasPositiveNumber(payload, ["after_pt", "afterPt", "space_after_pt", "spaceAfterPt"])
+      !hasZeroOrPositiveNumber(payload, ["before_pt", "beforePt", "space_before_pt", "spaceBeforePt"]) &&
+      !hasZeroOrPositiveNumber(payload, ["after_pt", "afterPt", "space_after_pt", "spaceAfterPt"])
     );
   }
   if (type === "set_paragraph_indent") {
@@ -149,6 +162,30 @@ function isPayloadSemanticallyEmpty(type: string, payload: Record<string, unknow
       !hasZeroOrPositiveNumber(payload, ["first_line_indent_pt", "firstLineIndentPt"]) &&
       !hasPositiveNumber(payload, ["first_line_indent_chars", "firstLineIndentChars"])
     );
+  }
+  if (type === "set_style_definition") {
+    return !hasNonEmptyRecord(payload, ["style_definition", "styleDefinition"]);
+  }
+  if (type === "set_numbering_level") {
+    return !hasNonEmptyRecord(payload, ["numbering_level", "numberingLevel"]);
+  }
+  if (type === "set_settings_flag") {
+    return !hasNonEmptyRecord(payload, ["settings"]);
+  }
+  if (type === "set_attr" || type === "remove_attr") {
+    return !hasNonEmptyString(payload, ["name"]);
+  }
+  if (type === "set_text") {
+    return false;
+  }
+  if (type === "remove_node") {
+    return false;
+  }
+  if (type === "ensure_node") {
+    return !hasNonEmptyString(payload, ["path"]) || !hasNonEmptyString(payload, ["xml_tag", "xmlTag"]);
+  }
+  if (type === "replace_node_xml") {
+    return !hasNonEmptyString(payload, ["node_xml", "nodeXml"]);
   }
   return Object.keys(payload).length === 0;
 }
@@ -174,6 +211,13 @@ function hasPaperSize(payload: Record<string, unknown>, keys: string[]): boolean
 
 function hasBoolean(payload: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => typeof payload[key] === "boolean");
+}
+
+function hasNonEmptyRecord(payload: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((key) => {
+    const value = payload[key];
+    return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0;
+  });
 }
 
 function hasValidLineSpacing(payload: Record<string, unknown>): boolean {

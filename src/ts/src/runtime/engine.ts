@@ -440,6 +440,7 @@ export function createMvpRuntime(deps: RuntimeDeps = {}): AgentRuntime {
   const registry = new InMemoryToolRegistry();
   registry.register(documentTooling.createInspectDocumentTool());
   registry.register(documentTooling.createDocxObservationTool());
+  registry.register(documentTooling.createApplyDocxXmlPatchTool());
   registry.register(
     deps.useMockWriteTool
       ? new WriteOperationTool()

@@ -1,19 +1,22 @@
 import { AgentError, asAppError } from "../core/errors.js";
 import type { DocumentIR } from "../core/types.js";
+import { createDocumentExecutionFacade } from "../document-execution/facade.js";
 import { createDocumentToolingFacade, type DocumentToolingFacade } from "../document-tooling/facade.js";
 import { buildTemplateAtomicPlan } from "../templates/template-atomic-planner.js";
 import { classifyTemplateParagraphs, normalizeTemplateClassificationResult } from "../templates/template-classifier.js";
 import { loadTemplateConfig } from "../templates/template-config.js";
 import { buildTemplateContextFromObservation } from "../templates/template-context-builder.js";
-import { deriveTemplateOutputDocxPath, executeTemplateWritePlan } from "../templates/template-executor.js";
+import { deriveTemplateOutputDocxPath, executeTemplatePatchPlan } from "../templates/template-executor.js";
 import { detectTemplateNumberingPrefix } from "../templates/template-numbering.js";
 import { asTemplateStageError } from "../templates/template-stage-error.js";
 import { validateTemplateClassification } from "../templates/template-validator.js";
-import { buildTemplateWritePlan } from "../templates/template-write-planner.js";
+import { buildTemplatePatchPlan } from "../templates/template-write-planner.js";
+import { InMemoryToolRegistry } from "../tools/tool-registry.js";
 import type {
   TemplateExecutionArtifacts,
   TemplateClassificationResult,
   TemplateContext,
+  TemplatePatchPlanItem,
   TemplateRunInput,
   TemplateRunReport,
   TemplateRunStageTimings,
@@ -34,8 +37,8 @@ export async function runFixedFormatTemplateOrchestrator(
   const tooling = deps.toolingFacade ?? createDocumentToolingFacade();
   const loadTemplate = deps.loadTemplate ?? loadTemplateConfig;
   const observeDocx = deps.observeDocx ?? ((docxPath: string) => tooling.observeDocument(docxPath));
-  const buildWritePlan = deps.buildWritePlan ?? buildTemplateWritePlan;
-  const executeWritePlan = deps.executeWritePlan ?? executeTemplateWritePlan;
+  const buildPatchPlan = deps.buildPatchPlan ?? deps.buildWritePlan ?? buildTemplatePatchPlan;
+  const executePatchPlan = deps.executePatchPlan ?? deps.executeWritePlan ?? executeTemplatePatchPlan;
   const materializeDoc = deps.materializeDoc ?? ((doc: DocumentIR) => tooling.materializeDocument(doc));
   const stageTimings = createEmptyStageTimings();
   const template = await loadTemplate(input.templatePath);
@@ -106,6 +109,7 @@ export async function runFixedFormatTemplateOrchestrator(
       classification_result: classification,
       validation_result: validation,
       execution_plan: [],
+      patch_plan: [],
       write_plan: [],
       execution_result: {
         applied: false,
@@ -119,13 +123,13 @@ export async function runFixedFormatTemplateOrchestrator(
     template,
     classification
   });
-  const writePlanResult = buildWritePlan({
+  const patchPlanResult = buildPatchPlan({
     template,
     executionPlan,
     document: context.document,
     structureIndex: context.structureIndex
   });
-  if (writePlanResult.issues.length > 0) {
+  if (patchPlanResult.issues.length > 0) {
     stageTimings.execution_ms = elapsedMs(executionStartedAt);
     return {
       status: "failed",
@@ -135,16 +139,17 @@ export async function runFixedFormatTemplateOrchestrator(
       classification_result: classification,
       validation_result: validation,
       execution_plan: executionPlan,
+      patch_plan: [],
       write_plan: [],
       execution_result: {
         applied: false,
-        issues: writePlanResult.issues
+        issues: patchPlanResult.issues
       }
     };
   }
 
   const outputDocxPath = deriveTemplateOutputDocxPath(input.docxPath);
-  if (writePlanResult.writePlan.length > 0 && !outputDocxPath.trim()) {
+  if (patchPlanResult.patchPlan.length > 0 && !outputDocxPath.trim()) {
     stageTimings.execution_ms = elapsedMs(executionStartedAt);
     return failedAfterExecution(
       template.template_meta,
@@ -152,7 +157,8 @@ export async function runFixedFormatTemplateOrchestrator(
       classification,
       validation,
       executionPlan,
-      writePlanResult.writePlan,
+      patchPlanResult.patchPlan,
+      patchPlanResult.writePlan,
       input.debug,
       stageTimings,
       new AgentError({
@@ -166,16 +172,82 @@ export async function runFixedFormatTemplateOrchestrator(
   let executed;
   const executionContext = {
     ...context,
-    document: writePlanResult.document,
-    structureIndex: writePlanResult.structureIndex
+    document: patchPlanResult.document,
+    structureIndex: patchPlanResult.structureIndex
   };
+  const useLegacyExecutionHooks = deps.executePatchPlan !== undefined || deps.executeWritePlan !== undefined;
   try {
-    executed = await executeWritePlan({
-      context: executionContext,
-      writePlan: writePlanResult.writePlan,
-      outputDocxPath,
-      debug: input.debug
-    });
+    if (useLegacyExecutionHooks) {
+      executed = await executePatchPlan({
+        context: executionContext,
+        patchPlan: patchPlanResult.patchPlan,
+        writePlan: patchPlanResult.writePlan,
+        outputDocxPath,
+        debug: input.debug
+      });
+    } else {
+      const registry = new InMemoryToolRegistry();
+      registry.register(tooling.createWriteOperationTool());
+      const executionFacade = createDocumentExecutionFacade({
+        toolRegistry: registry,
+        materializeDocument: async (doc) => await materializeDoc(doc)
+      });
+      const document = withExecutionDocumentPaths(patchPlanResult.document, input.docxPath, outputDocxPath);
+      const intents = patchPlanResult.writePlan
+        .map((item) => item.intent)
+        .filter((intent): intent is NonNullable<typeof intent> => Boolean(intent));
+      if (intents.length !== patchPlanResult.writePlan.length) {
+        throw new AgentError({
+          code: "E_TEMPLATE_WRITE_PLAN_INVALID",
+          message: "template write_plan contains items without intent",
+          retryable: false
+        });
+      }
+      const pipelineResult = await executionFacade.runUnifiedWritePipeline({
+        doc: document,
+        intents,
+        dryRun: false,
+        taskId: `template:${document.id}`,
+        goal: "apply_template_write_plan",
+        materialize: true
+      });
+      if (pipelineResult.executionResult.status !== "completed") {
+        throw new AgentError({
+          code: "E_TEMPLATE_PATCH_EXECUTION_FAILED",
+          message: pipelineResult.executionResult.summary,
+          retryable: false,
+          cause: pipelineResult.executionResult
+        });
+      }
+      executed = {
+        applied: true,
+        finalDoc: pipelineResult.finalDoc,
+        changeSummary: pipelineResult.changeSummary,
+        artifacts: {
+          patch_set_count: patchPlanResult.patchPlan.length,
+          patch_target_count: unique(patchPlanResult.patchPlan.flatMap((item) => item.patch_target_ids)).length,
+          patch_part_paths: unique(patchPlanResult.patchPlan.flatMap((item) => item.patch_part_paths)),
+          executed_step_count: pipelineResult.executionResult.steps.filter((step) => step.status === "success").length,
+          change_set_summary: {
+            change_count: pipelineResult.executionResult.changeSet.changes.length,
+            rolled_back: pipelineResult.executionResult.changeSet.rolledBack,
+            summaries: pipelineResult.executionResult.changeSet.changes.map((change) => change.summary)
+          },
+          ...(readSkippedParagraphArtifacts(pipelineResult.artifacts) ?? {}),
+          ...(input.debug ? { patch_sets: patchPlanResult.patchPlan.map((item) => item.patch_set) } : {}),
+          ...(input.debug
+            ? {
+                step_summaries: pipelineResult.executionResult.steps
+                  .map((step) => step.summary?.trim())
+                  .filter((summary): summary is string => Boolean(summary))
+              }
+            : {}),
+          ...(pipelineResult.materializeResult?.artifacts
+            ? { materialize_artifacts_summary: pipelineResult.materializeResult.artifacts }
+            : {})
+        }
+      };
+    }
   } catch (err) {
     stageTimings.execution_ms = elapsedMs(executionStartedAt);
     return failedAfterExecution(
@@ -184,7 +256,8 @@ export async function runFixedFormatTemplateOrchestrator(
       classification,
       validation,
       executionPlan,
-      writePlanResult.writePlan,
+      patchPlanResult.patchPlan,
+      patchPlanResult.writePlan,
       input.debug,
       stageTimings,
       err
@@ -192,15 +265,24 @@ export async function runFixedFormatTemplateOrchestrator(
   }
 
   try {
-    ensureMaterializeSourcePath(executed.finalDoc);
-    const materialized = await materializeDoc(executed.finalDoc);
-    const materializedOutputDocxPath = readOutputDocxPath(materialized.doc) ?? readOutputDocxPath(executed.finalDoc);
+    const finalDoc = withExecutionDocumentPaths(executed.finalDoc, input.docxPath, outputDocxPath);
+    const materialized = useLegacyExecutionHooks
+      ? await (async () => {
+          ensureMaterializeSourcePath(finalDoc);
+          return await materializeDoc(finalDoc);
+        })()
+      : {
+          doc: finalDoc,
+          summary: "",
+          artifacts: (executed.artifacts?.materialize_artifacts_summary as Record<string, unknown> | undefined) ?? {}
+        };
+    const materializedOutputDocxPath = readOutputDocxPath(materialized.doc) ?? readOutputDocxPath(finalDoc);
     const warnings = buildSuccessfulExecutionWarnings({
       template,
       context: executionContext,
       validation,
       executionPlan,
-      writePlan: writePlanResult.writePlan
+      patchPlan: patchPlanResult.patchPlan
     });
     stageTimings.execution_ms = elapsedMs(executionStartedAt);
     return {
@@ -212,13 +294,15 @@ export async function runFixedFormatTemplateOrchestrator(
       validation_result: validation,
       ...(warnings.length > 0 ? { warnings } : {}),
       execution_plan: executionPlan,
-      write_plan: writePlanResult.writePlan,
+      patch_plan: patchPlanResult.patchPlan,
+      write_plan: patchPlanResult.writePlan,
       execution_result: {
         applied: true,
         ...(materializedOutputDocxPath ? { output_docx_path: materializedOutputDocxPath } : {}),
         change_summary: joinSummaries(executed.changeSummary, materialized.summary),
         artifacts: buildExecutionArtifacts({
-          writeOperationCount: writePlanResult.writePlan.length,
+          patchPlan: patchPlanResult.patchPlan,
+          writePlan: patchPlanResult.writePlan,
           executedArtifacts: executed.artifacts,
           materialized: true,
           outputDocxPath: materializedOutputDocxPath,
@@ -236,7 +320,8 @@ export async function runFixedFormatTemplateOrchestrator(
       classification,
       validation,
       executionPlan,
-      writePlanResult.writePlan,
+      patchPlanResult.patchPlan,
+      patchPlanResult.writePlan,
       input.debug,
       stageTimings,
       err,
@@ -254,6 +339,7 @@ function failedAfterExecution(
   classification: TemplateRunReport["classification_result"],
   validation: TemplateRunReport["validation_result"],
   executionPlan: TemplateRunReport["execution_plan"],
+  patchPlan: TemplateRunReport["patch_plan"],
   writePlan: TemplateRunReport["write_plan"],
   debug: boolean | undefined,
   stageTimings: TemplateRunStageTimings,
@@ -272,14 +358,16 @@ function failedAfterExecution(
     classification_result: classification,
     validation_result: validation,
     execution_plan: executionPlan,
+    patch_plan: patchPlan,
     write_plan: writePlan,
     execution_result: {
       applied: false,
       ...(partial?.changeSummary ? { change_summary: partial.changeSummary } : {}),
-      ...(partial?.artifacts || writePlan.length > 0
+      ...(partial?.artifacts || patchPlan.length > 0
         ? {
             artifacts: buildExecutionArtifacts({
-              writeOperationCount: writePlan.length,
+              patchPlan,
+              writePlan,
               executedArtifacts: partial?.artifacts,
               materialized: false,
               debug
@@ -373,23 +461,41 @@ function ensureMaterializeSourcePath(doc: DocumentIR): void {
   }
 }
 
+function withExecutionDocumentPaths(doc: DocumentIR, inputDocxPath: string, outputDocxPath: string): DocumentIR {
+  return {
+    ...doc,
+    metadata: {
+      ...(doc.metadata ?? {}),
+      inputDocxPath,
+      outputDocxPath: readOutputDocxPath(doc) ?? outputDocxPath
+    }
+  };
+}
+
 function buildExecutionArtifacts(input: {
-  writeOperationCount: number;
+  patchPlan: TemplatePatchPlanItem[];
+  writePlan: TemplateRunReport["write_plan"];
   executedArtifacts?: Record<string, unknown>;
   materialized: boolean;
   outputDocxPath?: string;
   debug?: boolean;
   materializeArtifacts?: Record<string, unknown>;
 }): TemplateExecutionArtifacts | undefined {
-  if (input.writeOperationCount === 0 && !input.debug && !input.outputDocxPath && !input.executedArtifacts) {
+  if (input.patchPlan.length === 0 && !input.debug && !input.outputDocxPath && !input.executedArtifacts) {
     return undefined;
   }
 
+  const patchTargetIds = unique(input.patchPlan.flatMap((item) => item.patch_target_ids));
+  const patchPartPaths = unique(input.patchPlan.flatMap((item) => item.patch_part_paths));
   const stableArtifacts: TemplateExecutionArtifacts = {
-    write_operation_count: input.writeOperationCount,
+    patch_set_count: input.patchPlan.length,
+    patch_target_count: patchTargetIds.length,
+    patch_part_paths: patchPartPaths,
+    write_operation_count: input.writePlan.length,
     executed_step_count: readExecutedStepCount(input.executedArtifacts),
     materialized: input.materialized,
-    ...(input.outputDocxPath ? { output_docx_path: input.outputDocxPath } : {})
+    ...(input.outputDocxPath ? { output_docx_path: input.outputDocxPath } : {}),
+    ...(readSkippedParagraphArtifacts(input.executedArtifacts) ?? {})
   };
 
   if (!input.debug) {
@@ -398,6 +504,7 @@ function buildExecutionArtifacts(input: {
 
   return {
     ...stableArtifacts,
+    ...(input.patchPlan.length > 0 ? { patch_sets: input.patchPlan.map((item) => item.patch_set) } : {}),
     ...(readStepSummaries(input.executedArtifacts)
       ? { step_summaries: readStepSummaries(input.executedArtifacts) }
       : {}),
@@ -413,7 +520,7 @@ function buildSuccessfulExecutionWarnings(input: {
   context: TemplateContext;
   validation: TemplateRunReport["validation_result"];
   executionPlan: TemplateRunReport["execution_plan"];
-  writePlan: TemplateRunReport["write_plan"];
+  patchPlan: TemplateRunReport["patch_plan"];
 }): TemplateRunWarning[] {
   if (input.template.validation_policy.enforce_validation !== true) {
     return [];
@@ -428,9 +535,9 @@ function buildSuccessfulExecutionWarnings(input: {
 function buildPostExecutionWarnings(input: {
   context: TemplateContext;
   executionPlan: TemplateRunReport["execution_plan"];
-  writePlan: TemplateRunReport["write_plan"];
+  patchPlan: TemplateRunReport["patch_plan"];
 }): TemplateRunWarning[] {
-  const modifiedParagraphIds = collectModifiedParagraphIds(input.writePlan, input.context.structureIndex.paragraphs);
+  const modifiedParagraphIds = collectModifiedParagraphIds(input.patchPlan, input.context.structureIndex.paragraphs);
   if (modifiedParagraphIds.size === 0) {
     return [];
   }
@@ -498,7 +605,7 @@ function dedupeRunWarnings(warnings: TemplateRunWarning[]): TemplateRunWarning[]
 }
 
 function collectModifiedParagraphIds(
-  writePlan: TemplateRunReport["write_plan"],
+  patchPlan: TemplateRunReport["patch_plan"],
   paragraphs: TemplateContext["structureIndex"]["paragraphs"]
 ): Set<string> {
   const modifiedParagraphIds = new Set<string>();
@@ -509,24 +616,17 @@ function collectModifiedParagraphIds(
     }
   }
 
-  for (const operation of writePlan) {
-    if (operation.targetSelector?.scope === "paragraph_ids") {
-      for (const paragraphId of operation.targetSelector.paragraphIds ?? []) {
-        if (paragraphId && paragraphId !== "__document__") {
+  for (const item of patchPlan) {
+    for (const targetId of item.patch_target_ids) {
+      if (targetId.startsWith("target:block:")) {
+        modifiedParagraphIds.add(targetId.slice("target:block:".length));
+        continue;
+      }
+      if (targetId.startsWith("target:inline:")) {
+        const paragraphId = runNodeToParagraphId.get(targetId.slice("target:inline:".length));
+        if (paragraphId) {
           modifiedParagraphIds.add(paragraphId);
         }
-      }
-    }
-    if (operation.targetNodeId) {
-      const paragraphId = runNodeToParagraphId.get(operation.targetNodeId);
-      if (paragraphId) {
-        modifiedParagraphIds.add(paragraphId);
-      }
-    }
-    for (const targetNodeId of operation.targetNodeIds ?? []) {
-      const paragraphId = runNodeToParagraphId.get(targetNodeId);
-      if (paragraphId) {
-        modifiedParagraphIds.add(paragraphId);
       }
     }
   }
@@ -561,4 +661,26 @@ function readChangeSetSummary(artifacts?: Record<string, unknown>): Record<strin
     return undefined;
   }
   return artifacts.change_set_summary as Record<string, unknown>;
+}
+
+function readSkippedParagraphArtifacts(artifacts?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!artifacts) {
+    return undefined;
+  }
+  const skippedParagraphIds = Array.isArray(artifacts.skipped_paragraph_ids)
+    ? artifacts.skipped_paragraph_ids.filter((item): item is string => typeof item === "string")
+    : [];
+  const skippedParagraphCount =
+    typeof artifacts.skipped_paragraph_count === "number" ? artifacts.skipped_paragraph_count : skippedParagraphIds.length;
+  if (skippedParagraphCount <= 0) {
+    return undefined;
+  }
+  return {
+    skipped_paragraph_count: skippedParagraphCount,
+    ...(skippedParagraphIds.length > 0 ? { skipped_paragraph_ids: skippedParagraphIds } : {})
+  };
+}
+
+function unique<T>(values: T[]): T[] {
+  return Array.from(new Set(values));
 }

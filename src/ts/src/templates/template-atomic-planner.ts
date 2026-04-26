@@ -1,5 +1,13 @@
-import type { TemplateContract } from "./template-contract.js";
+import type { TemplateContract, TemplatePatchOperation, TemplatePatchSelector } from "./template-contract.js";
 import type { TemplateAtomicPlanItem, TemplateClassificationResult } from "./types.js";
+
+type LegacyOperationBlockLike = {
+  semantic_key: string;
+  text_style?: Record<string, unknown>;
+  paragraph_style?: Record<string, unknown>;
+  relative_spacing?: Record<string, unknown>;
+  language_font_overrides?: Record<string, unknown>;
+};
 
 export function buildTemplateAtomicPlan(input: {
   template: TemplateContract;
@@ -41,44 +49,59 @@ export function buildTemplateAtomicPlan(input: {
     }
   }
 
+  const patchBlocks =
+    Array.isArray(input.template.operation_blocks) && input.template.operation_blocks.length > 0
+      ? (input.template.operation_blocks as LegacyOperationBlockLike[]).map((block) => {
+          const patchBlock = {
+            semantic_key: block.semantic_key,
+            selector: {
+              part: "document",
+              scope: "paragraph"
+            } satisfies TemplatePatchSelector,
+            operations: buildLegacyBlockOperations(block)
+          };
+          return {
+            block: patchBlock,
+            sourceBlock: {
+              ...block,
+              ...patchBlock,
+              ...(block.language_font_overrides ? { language_font_overrides: block.language_font_overrides } : {})
+            }
+          };
+        })
+      : (input.template.patch_blocks ?? []).map((block) => ({
+          block,
+          sourceBlock: block
+        }));
+
   return [
-    ...input.template.operation_blocks.map((block) => ({
+    ...patchBlocks.map(({ block, sourceBlock }) => ({
       semantic_key: block.semantic_key,
       paragraph_ids: paragraphIdsBySemantic.get(block.semantic_key) ?? [],
-      text_style: block.text_style,
-      paragraph_style: block.paragraph_style,
-      ...(block.language_font_overrides ? { language_font_overrides: block.language_font_overrides } : {}),
-      ...(block.relative_spacing ? { relative_spacing: block.relative_spacing } : {}),
-      ...(block.placement_rules ? { placement_rules: block.placement_rules } : {})
+      selector: resolvePatchSelector(block.selector, paragraphIdsBySemantic.get(block.semantic_key) ?? []),
+      operations: block.operations,
+      source_block: sourceBlock
     })),
     ...derivedSemantics.map((semantic) => ({
       semantic_key: semantic.key,
       paragraph_ids: paragraphIdsBySemantic.get(semantic.key) ?? [],
-      text_style: semantic.operation.text_style,
-      paragraph_style: semantic.operation.paragraph_style,
-      ...(semantic.operation.language_font_overrides
-        ? { language_font_overrides: semantic.operation.language_font_overrides }
-        : {}),
-      ...(semantic.operation.relative_spacing ? { relative_spacing: semantic.operation.relative_spacing } : {}),
-      ...(semantic.operation.placement_rules ? { placement_rules: semantic.operation.placement_rules } : {})
+      selector: resolvePatchSelector(
+        {
+          part: "document",
+          scope: "paragraph"
+        },
+        paragraphIdsBySemantic.get(semantic.key) ?? []
+      ),
+      operations: buildDerivedSemanticPatchOperations(semantic.operation),
+      source_block: undefined
     }))
-  ]
-    .map((block) => {
-      const paragraph_ids = block.paragraph_ids;
-      if (paragraph_ids.length === 0) {
-        return undefined;
-      }
-      return {
-        semantic_key: block.semantic_key,
-        paragraph_ids: [...paragraph_ids],
-        text_style: block.text_style,
-        paragraph_style: block.paragraph_style,
-        ...(block.language_font_overrides ? { language_font_overrides: block.language_font_overrides } : {}),
-        ...(block.relative_spacing ? { relative_spacing: block.relative_spacing } : {}),
-        ...(block.placement_rules ? { placement_rules: block.placement_rules } : {})
-      } satisfies TemplateAtomicPlanItem;
-    })
-    .filter((item): item is TemplateAtomicPlanItem => Boolean(item));
+  ].filter((item): item is TemplateAtomicPlanItem => {
+    if (item.operations.length === 0) {
+      return false;
+    }
+    const selectorParagraphs = item.selector.match?.paragraph_ids ?? [];
+    return item.paragraph_ids.length > 0 || selectorParagraphs.length > 0 || hasNonParagraphSelector(item.selector);
+  });
 }
 
 function readDerivedSemanticMode(semantic: NonNullable<TemplateContract["derived_semantics"]>[number]): "aggregate" | "refine" {
@@ -91,4 +114,93 @@ function sharesInheritedAtomicSemantic(
 ): boolean {
   const rightParents = new Set(right.inherits_from);
   return left.inherits_from.some((semanticKey) => rightParents.has(semanticKey));
+}
+
+function resolvePatchSelector(selector: TemplatePatchSelector, paragraphIds: readonly string[]): TemplatePatchSelector {
+  const normalizedParagraphIds = Array.from(new Set(paragraphIds.filter(Boolean)));
+  const match = selector.match ? { ...selector.match } : undefined;
+  if (!match?.paragraph_ids?.length && normalizedParagraphIds.length > 0 && (selector.scope === "paragraph" || selector.scope === "run")) {
+    return {
+      ...selector,
+      match: {
+        ...(match ?? {}),
+        paragraph_ids: normalizedParagraphIds
+      }
+    };
+  }
+  return {
+    ...selector,
+    ...(match ? { match } : {})
+  };
+}
+
+function buildDerivedSemanticPatchOperations(
+  operation: NonNullable<TemplateContract["derived_semantics"]>[number]["operation"]
+): TemplatePatchOperation[] {
+  const operations: TemplatePatchOperation[] = [];
+  if (Object.keys(operation.paragraph_style ?? {}).length > 0) {
+    operations.push({
+      type: "set_paragraph_style",
+      paragraph_style: operation.paragraph_style
+    });
+  }
+  if (Object.keys(operation.text_style ?? {}).length > 0) {
+    operations.push({
+      type: "set_run_style",
+      text_style: operation.text_style
+    });
+  }
+  if (Object.keys(operation.relative_spacing ?? {}).length > 0) {
+    const spacing = operation.relative_spacing as Record<string, unknown>;
+    if (spacing.before_pt !== undefined) {
+      operations.push({
+        type: "set_paragraph_style",
+        paragraph_style: {
+          space_before_pt: spacing.before_pt
+        }
+      });
+    }
+    if (spacing.after_pt !== undefined) {
+      operations.push({
+        type: "set_paragraph_style",
+        paragraph_style: {
+          space_after_pt: spacing.after_pt
+        }
+      });
+    }
+  }
+  return operations;
+}
+
+function hasNonParagraphSelector(selector: TemplatePatchSelector): boolean {
+  return selector.scope === "section" || selector.scope === "style" || selector.scope === "numbering_level" || selector.scope === "settings_node";
+}
+
+function buildLegacyBlockOperations(block: LegacyOperationBlockLike): TemplatePatchOperation[] {
+  const operations: TemplatePatchOperation[] = [];
+  if (Object.keys(block.paragraph_style ?? {}).length > 0) {
+    operations.push({
+      type: "set_paragraph_style",
+      paragraph_style: block.paragraph_style
+    });
+  }
+  if (Object.keys(block.text_style ?? {}).length > 0) {
+    operations.push({
+      type: "set_run_style",
+      text_style: block.text_style
+    });
+  }
+  if ((block.relative_spacing ?? {}).before_pt !== undefined) {
+    operations.push({
+      type: "set_paragraph_style",
+      paragraph_style: { space_before_pt: (block.relative_spacing ?? {}).before_pt }
+    });
+  }
+  if ((block.relative_spacing ?? {}).after_pt !== undefined) {
+    operations.push({
+      type: "set_paragraph_style",
+      paragraph_style: { space_after_pt: (block.relative_spacing ?? {}).after_pt }
+    });
+  }
+  return operations;
 }

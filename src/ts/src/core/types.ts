@@ -21,6 +21,15 @@ export type OperationType =
   | "set_page_layout"
   | "set_paragraph_spacing"
   | "set_paragraph_indent"
+  | "set_style_definition"
+  | "set_numbering_level"
+  | "set_settings_flag"
+  | "set_attr"
+  | "remove_attr"
+  | "set_text"
+  | "remove_node"
+  | "ensure_node"
+  | "replace_node_xml"
   | "merge_paragraph"
   | "split_paragraph";
 
@@ -111,6 +120,8 @@ export interface Operation {
   type: OperationType;
   targetNodeId?: string;
   targetNodeIds?: string[];
+  patchTargetIds?: string[];
+  patchPartPaths?: string[];
   targetSelector?: NodeSelector;
   sourceTargetSelector?: NodeSelector;
   payload: Record<string, unknown>;
@@ -243,6 +254,9 @@ export interface AppliedChange {
   operation?: Operation;
   summary: string;
   rollbackToken?: string;
+  patchSet?: Record<string, unknown>;
+  patchTargetCount?: number;
+  patchPartPaths?: string[];
 }
 
 export interface ChangeSet {
