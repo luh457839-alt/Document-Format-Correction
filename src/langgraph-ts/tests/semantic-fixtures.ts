@@ -250,6 +250,50 @@ export function createProjectionBudgetStressBundle(): ParsedDocumentBundle {
   ]);
 }
 
+export function createSemanticHeadingBundle(): ParsedDocumentBundle {
+  return createSyntheticBundle([
+    {
+      id: "p_heading_structural",
+      text: "第二章 适用范围",
+      role: "heading",
+      headingLevel: 2,
+      styleName: "Heading2",
+      runStyle: {
+        fontName: "KaiTi",
+        fontSizePt: 15,
+        isBold: true,
+        paragraphAlignment: "center"
+      }
+    },
+    {
+      id: "p_body_heading_context",
+      text: "本章用于说明本规则的适用边界和执行口径。",
+      styleName: "BodyText",
+      runStyle: {
+        fontName: "SimSun",
+        fontSizePt: 12,
+        isBold: false,
+        isItalic: false,
+        paragraphAlignment: "left",
+        lineSpacing: 1.5
+      }
+    },
+    {
+      id: "p_body_heading_context_2",
+      text: "各条款在执行前均应以本节说明为准。",
+      styleName: "BodyText",
+      runStyle: {
+        fontName: "SimSun",
+        fontSizePt: 12,
+        isBold: false,
+        isItalic: false,
+        paragraphAlignment: "left",
+        lineSpacing: 1.5
+      }
+    }
+  ]);
+}
+
 function createSyntheticBundle(paragraphs: SemanticParagraphSpec[]): ParsedDocumentBundle {
   const blockNodes: ParagraphNode[] = [];
   const inlineNodes: DocumentInlineRecord[] = [];

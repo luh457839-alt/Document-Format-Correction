@@ -75,10 +75,10 @@ export function normalizeWriteToolPayload(operation: OperationType, payload: Rec
     }
     case "set_alignment": {
       const alignment = pickNonEmptyString(payload.paragraph_alignment, payload.alignment);
-      if (!alignment) {
+      if (!alignment && !isSemanticAlignmentPayload(payload)) {
         throw invalidPayload(operation, "set_alignment requires paragraph_alignment");
       }
-      return { paragraph_alignment: alignment };
+      return alignment ? { paragraph_alignment: alignment } : payload;
     }
     case "set_font_color": {
       const color = pickHexColor(payload.font_color, payload.fontColor);

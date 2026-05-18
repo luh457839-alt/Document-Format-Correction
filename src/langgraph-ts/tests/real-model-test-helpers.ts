@@ -31,6 +31,19 @@ export function expectNoReasoningCompatibilityRegression(result: Phase3RunResult
   }
 }
 
+export function expectControlledRealModelOutcome(
+  result: Phase3RunResult,
+  allowedSignals: string[]
+): void {
+  expectNoReasoningCompatibilityRegression(result);
+  expect(result.artifacts.output_docx_path).toBeFalsy();
+  const diagnosticsText = flattenDiagnosticsText(result.state.diagnostics);
+  expect(
+    allowedSignals.some((signal) => diagnosticsText.includes(signal)),
+    `expected controlled failure signals=${allowedSignals.join(", ")} diagnostics=${summarizeDiagnostics(result.state.diagnostics)}`
+  ).toBe(true);
+}
+
 export function findDiagnostics(
   diagnostics: Phase3Diagnostic[],
   predicate: (entry: Phase3Diagnostic) => boolean

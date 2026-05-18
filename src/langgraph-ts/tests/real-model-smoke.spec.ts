@@ -7,6 +7,7 @@ import {
 } from "./real-docx-fixtures.js";
 import {
   debugRealModelResult,
+  expectControlledRealModelOutcome,
   expectNoReasoningCompatibilityRegression,
   expectRealModelOutputAndStages
 } from "./real-model-test-helpers.js";
@@ -133,6 +134,37 @@ describe("real model smoke", () => {
     });
   });
 
+  it("normalizes constrained semantic heading payloads into the current contract", async () => {
+    const styleFixture = await createRealDocxFixture(getRealDocxSample("stylesNumbering"));
+    cleanups.push(() => styleFixture.cleanup());
+
+    const normalizedSemantic = await normalizeOpenAICompatibleWriteToolInputForSmoke(
+      {
+        request_id: "semantic-heading-001",
+        operation: "set_alignment",
+        target: {
+          kind: "semantic_selector",
+          semantic: "semantic_heading"
+        },
+        payload: {
+          baseline_from_semantic: "body_like_paragraphs",
+          sync_fields: ["paragraph_alignment", "line_spacing"]
+        }
+      },
+      { document_path: styleFixture.docxPath }
+    );
+
+    expect(parseWriteToolInput(normalizedSemantic)).toEqual(normalizedSemantic);
+    expect(normalizedSemantic.target).toEqual({
+      kind: "semantic_selector",
+      semantic: "semantic_heading"
+    });
+    expect(normalizedSemantic.payload).toEqual({
+      baseline_from_semantic: "body_like_paragraphs",
+      sync_fields: ["paragraph_alignment", "line_spacing"]
+    });
+  });
+
   it("returns tool calls and materializes DOCX for 标准正文样本", async ({ skip }) => {
     if (!maybeModel.model) {
       skip(maybeModel.reason);
@@ -155,12 +187,10 @@ describe("real model smoke", () => {
       expect(result.state.diagnostics.some((entry) => entry.stage === "write_tool" && entry.executed === true)).toBe(true);
       expectNoReasoningCompatibilityRegression(result);
     } else {
-      expectNoReasoningCompatibilityRegression(result);
-      expect(
-        result.state.diagnostics.some(
-          (entry) => entry.error_code === "E_GRAPH_RECURSION_LIMIT" || entry.provider_diagnostic_kind === "provider_read_loop_exhausted"
-        )
-      ).toBe(true);
+      expectControlledRealModelOutcome(result, [
+        "E_GRAPH_RECURSION_LIMIT",
+        "provider_read_loop_exhausted"
+      ]);
     }
   }, 90000);
 
@@ -207,18 +237,12 @@ describe("real model smoke", () => {
       expectRealModelOutputAndStages(result, ["write_tool", "reconcile", "materialize"]);
       expectNoReasoningCompatibilityRegression(result);
     } else {
-      expectNoReasoningCompatibilityRegression(result);
-      expect(
-        result.state.diagnostics.some((entry) => {
-          const message = String(entry.message ?? "");
-          return (
-            entry.error_code === "E_OPERATION_TARGET_INCOMPATIBLE" ||
-            entry.provider_diagnostic_kind === "provider_tool_args_unmappable" ||
-            message.includes("set_settings_flag requires explicit settings patch targets") ||
-            message.includes("set_settings_flag requires settings")
-          );
-        })
-      ).toBe(true);
+      expectControlledRealModelOutcome(result, [
+        "E_OPERATION_TARGET_INCOMPATIBLE",
+        "provider_tool_args_unmappable",
+        "set_settings_flag requires explicit settings patch targets",
+        "set_settings_flag requires settings"
+      ]);
     }
   }, 120000);
 });

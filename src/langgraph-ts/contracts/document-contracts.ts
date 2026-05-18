@@ -288,11 +288,13 @@ export interface ChatDocumentProjection {
     nodeIds: string[];
   };
   diagnostics: {
+    kind?: "chat";
     focusRegexProbe?: string;
     estimatedChars: number;
     textBudget?: number;
     budgetStatus: "fit";
     degradationSteps: ChatProjectionDegradationStep[];
+    paragraphCount?: number;
   };
 }
 
@@ -370,6 +372,7 @@ export interface TemplateDocumentProjection {
     styleNameCounts: Record<string, number>;
   };
   diagnostics: {
+    kind?: "template";
     estimatedChars: number;
     textBudget?: number;
     maxBatchBudget?: number;
@@ -377,5 +380,6 @@ export interface TemplateDocumentProjection {
     degradationSteps: TemplateProjectionDegradationStep[];
     batchCount: number;
     localContextWindow: number;
+    paragraphCount?: number;
   };
 }

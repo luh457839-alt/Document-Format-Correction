@@ -478,6 +478,36 @@ describe("phase 3 runtime graph", () => {
     expect(model.lastInvocationMessages.join("\n")).toContain("标题段");
   });
 
+  it("keeps runtime chat/template projection diagnostics aligned for the same projection intent", async () => {
+    const fixture = await createFixture();
+    const model = new StaticModelAdapter([{ type: "ai", text: "已读取投影上下文。" }]);
+    const projectionIntent: Phase3ProjectionIntent = {
+      focus_regex_probe: "标题段",
+      chat_text_budget: 320,
+      template_text_budget: 480,
+      template_batch_budget: 220,
+      chat_neighbor_window: 1,
+      template_local_context_window: 1
+    };
+
+    const result = await runPhase3Graph({
+      thread_id: "projection-alignment-thread",
+      document_path: fixture.docxPath,
+      user_message: "解释当前投影",
+      projection_intent: projectionIntent
+    }, {
+      model,
+      checkpoint: new InMemoryCheckpointer()
+    });
+
+    expect(result.state.chat_projection?.diagnostics.textBudget).toBe(320);
+    expect(result.state.template_projection?.diagnostics.textBudget).toBe(480);
+    expect(result.state.chat_projection?.traceability.paragraphIds).toEqual(
+      result.state.template_projection?.paragraphs.map((paragraph) => paragraph.paragraphId)
+    );
+    expect(result.state.template_projection?.diagnostics.batchCount).toBeGreaterThanOrEqual(1);
+  });
+
   it("classifies template projections from real projection batches instead of trusting template_config semantic_tags", async () => {
     const fixture = await createFixture();
     const model = new StaticModelAdapter([]);

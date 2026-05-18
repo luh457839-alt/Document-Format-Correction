@@ -122,13 +122,15 @@ export function buildTemplateProjection(
       styleNameCounts
     },
     diagnostics: {
+      kind: "template",
       estimatedChars,
       ...(options.textBudget !== undefined ? { textBudget: options.textBudget } : {}),
       ...(options.maxBatchBudget !== undefined ? { maxBatchBudget: options.maxBatchBudget } : {}),
       budgetStatus: "fit",
       degradationSteps,
       batchCount: batches.length,
-      localContextWindow
+      localContextWindow,
+      paragraphCount: paragraphs.length
     }
   };
 }

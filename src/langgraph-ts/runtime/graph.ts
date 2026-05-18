@@ -507,38 +507,59 @@ function executeWriteDocumentCall(
   }
 
   const analysis = analyzeWriteTarget(bundle, rawInput.target, rawInput.payload);
-  const compilation = compileWriteToolPatchSet(bundle, rawInput, analysis);
-  const targetMap = new Map(
-    ((bundle.document_ast.patchTargets as DocxPatchTarget[]) ?? []).map((target) => [target.id, target] as const)
-  );
-  const patchTargets = compilation.patchSet.targets?.map((target) => targetMap.get(target.id) ?? target) ?? [];
-  const mutation = execution.executed
-    ? applyPatchOperationsToBundle(bundle, patchTargets, compilation.patchSet.operations)
-    : { bundle, changed: false };
-  return new ToolMessage({
-    content: execution.summary,
-    tool_call_id: toolCallId,
-    status: "success",
-    artifact: {
-      state_update: {
-        ...(execution.idempotency_key && execution.executed ? { executed_patch_keys: [execution.idempotency_key] } : {}),
-        document_bundle: mutation.bundle,
-        diagnostics: [
-          {
-            stage: "write_tool",
-            request_id: rawInput.request_id,
-            executed: execution.executed,
-            skip_reason: execution.skip_reason,
-            idempotency_key: execution.idempotency_key,
-            target_count: execution.target_count
-          },
-          ...(execution.diagnostics ?? []).map((entry) => ({
-            ...entry
-          }))
-        ]
+  try {
+    const compilation = compileWriteToolPatchSet(bundle, rawInput, analysis);
+    const targetMap = new Map(
+      ((bundle.document_ast.patchTargets as DocxPatchTarget[]) ?? []).map((target) => [target.id, target] as const)
+    );
+    const patchTargets = compilation.patchSet.targets?.map((target) => targetMap.get(target.id) ?? target) ?? [];
+    const mutation = execution.executed
+      ? applyPatchOperationsToBundle(bundle, patchTargets, compilation.patchSet.operations)
+      : { bundle, changed: false };
+    return new ToolMessage({
+      content: execution.summary,
+      tool_call_id: toolCallId,
+      status: "success",
+      artifact: {
+        state_update: {
+          ...(execution.idempotency_key && execution.executed ? { executed_patch_keys: [execution.idempotency_key] } : {}),
+          document_bundle: mutation.bundle,
+          diagnostics: [
+            {
+              stage: "write_tool",
+              request_id: rawInput.request_id,
+              executed: execution.executed,
+              skip_reason: execution.skip_reason,
+              idempotency_key: execution.idempotency_key,
+              target_count: execution.target_count
+            },
+            ...(execution.diagnostics ?? []).map((entry) => ({
+              ...entry
+            }))
+          ]
+        }
       }
-    }
-  });
+    });
+  } catch (error) {
+    return new ToolMessage({
+      content: error instanceof Error ? error.message : String(error),
+      tool_call_id: toolCallId,
+      status: "error",
+      artifact: {
+        state_update: {
+          diagnostics: [
+            {
+              stage: "write_tool",
+              request_id: rawInput.request_id,
+              executed: false,
+              error_code: error instanceof AgentError ? error.code : "E_WRITE_TOOL_FAILED",
+              message: error instanceof Error ? error.message : String(error)
+            }
+          ]
+        }
+      }
+    });
+  }
 }
 
 function mergeToolArtifacts(

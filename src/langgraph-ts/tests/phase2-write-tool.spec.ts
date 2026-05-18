@@ -13,6 +13,7 @@ import { executeWriteTool } from "../tooling/write-tool.js";
 import {
   createAmbiguousSemanticBundle,
   createLowConfidenceSemanticBundle,
+  createSemanticHeadingBundle,
   createSemanticProjectionBundle,
   createUnderdeterminedBaselineBundle
 } from "./semantic-fixtures.js";
@@ -347,6 +348,35 @@ describe("phase 2 write tool execution", () => {
     );
   });
 
+  it("accepts semantic_heading as a constrained merged semantic selector", () => {
+    const semanticBundle = createSemanticHeadingBundle();
+    const result = executeWriteTool(semanticBundle, {
+      request_id: "semantic-heading-baseline",
+      operation: "set_font",
+      target: { kind: "semantic_selector", semantic: "semantic_heading" },
+      payload: {
+        baseline_from_semantic: "body_like_paragraphs",
+        sync_fields: ["font_name", "font_size_pt", "paragraph_alignment"]
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("expected semantic heading success");
+    }
+    expect(result.executed).toBe(true);
+    expect(result.patch_target_ids).toEqual(["target:block:p_heading_structural"]);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          semantic_selector: "semantic_heading",
+          semantic_target_paragraph_ids: ["p_heading_structural"],
+          applied_fields: ["font_name", "font_size_pt", "paragraph_alignment"]
+        })
+      ])
+    );
+  });
+
   it("compiles semantic baseline alignment into font-only patch operations", () => {
     const semanticBundle = createSemanticProjectionBundle();
     const input = {
@@ -368,6 +398,30 @@ describe("phase 2 write tool execution", () => {
     );
     expect(compilation.patchSet.operations.map((operation) => operation.name)).not.toEqual(
       expect.arrayContaining(["paragraph_alignment", "line_spacing", "space_before_pt", "first_line_indent_pt"])
+    );
+  });
+
+  it("compiles explicitly requested constrained semantic paragraph fields without leaking structure fields", () => {
+    const semanticBundle = createSemanticHeadingBundle();
+    const input = {
+      request_id: "semantic-compile-constrained-fields",
+      operation: "set_alignment",
+      target: { kind: "semantic_selector", semantic: "semantic_heading" } as const,
+      payload: {
+        baseline_from_semantic: "body_like_paragraphs",
+        sync_fields: ["paragraph_alignment", "line_spacing", "font_name"]
+      }
+    };
+
+    const analysis = analyzeWriteTarget(semanticBundle, input.target, input.payload);
+    const compilation = compileWriteToolPatchSet(semanticBundle, input, analysis);
+
+    expect(compilation.patchTargetIds).toEqual(["target:block:p_heading_structural"]);
+    expect(compilation.patchSet.operations.map((operation) => operation.name)).toEqual(
+      expect.arrayContaining(["paragraph_alignment", "line_spacing", "font_name"])
+    );
+    expect(compilation.patchSet.operations.map((operation) => operation.name)).not.toEqual(
+      expect.arrayContaining(["space_before_pt", "space_after_pt", "first_line_indent_pt"])
     );
   });
 

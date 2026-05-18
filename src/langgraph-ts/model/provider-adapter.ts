@@ -55,7 +55,7 @@ export const PHASE3_STRONG_SYSTEM_PROMPT = [
   "优先一次性直接输出最终 write_document。",
   "只有在信息不足、必须先查看文档结构时，才允许先发起 operation=read。",
   "最终写入必须严格遵守 WriteToolInput：request_id、operation、target、payload。",
-  "semantic_selector 只允许 title_like_paragraphs 或 body_like_paragraphs。",
+  "semantic_selector 只允许 semantic_heading、title_like_paragraphs 或 body_like_paragraphs。",
   "语义样式同步 payload 只允许 baseline_from_semantic=body_like_paragraphs 和受限 sync_fields。",
   "禁止自由文本 target，禁止自造 operation，禁止使用未定义 payload 字段。"
 ].join("\n");
@@ -301,7 +301,7 @@ export function buildProviderWriteDocumentTool(): ProviderToolDefinition {
                 additionalProperties: false,
                 properties: {
                   kind: { type: "string", enum: ["semantic_selector"] },
-                  semantic: { type: "string", enum: ["title_like_paragraphs", "body_like_paragraphs"] }
+                  semantic: { type: "string", enum: ["semantic_heading", "title_like_paragraphs", "body_like_paragraphs"] }
                 },
                 required: ["kind", "semantic"]
               },
@@ -404,7 +404,7 @@ export function buildProviderWriteDocumentTool(): ProviderToolDefinition {
                     minItems: 1,
                     items: {
                       type: "string",
-                      enum: ["font_name", "font_size_pt", "is_bold", "is_italic"]
+                      enum: ["font_name", "font_size_pt", "is_bold", "is_italic", "paragraph_alignment", "line_spacing"]
                     }
                   }
                 }

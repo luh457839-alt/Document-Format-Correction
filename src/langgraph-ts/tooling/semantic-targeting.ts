@@ -1,6 +1,6 @@
 import type { ParsedDocumentBundle, TemplateDocumentProjection } from "../contracts/document-contracts.js";
 
-export type SupportedSemanticSelector = "title_like_paragraphs" | "body_like_paragraphs";
+export type SupportedSemanticSelector = "semantic_heading" | "title_like_paragraphs" | "body_like_paragraphs";
 export type SemanticConfidence = "high" | "medium" | "low";
 
 export interface SemanticParagraphScore {
@@ -55,7 +55,14 @@ interface SemanticPayloadConstraints {
   sync_fields?: string[];
 }
 
-const FONT_SYNC_FIELDS = ["font_name", "font_size_pt", "is_bold", "is_italic"] as const;
+const CONSTRAINED_SYNC_FIELDS = [
+  "font_name",
+  "font_size_pt",
+  "is_bold",
+  "is_italic",
+  "paragraph_alignment",
+  "line_spacing"
+] as const;
 const BASELINE_FIELDS = ["font_name", "font_size_pt", "is_bold", "is_italic", "paragraph_alignment", "line_spacing"] as const;
 
 export function resolveSemanticSelector(
@@ -79,7 +86,42 @@ export function resolveSemanticSelector(
     };
   }
 
+  if (selector === "semantic_heading") {
+    const headingParagraphIds = projection.paragraphs
+      .filter((paragraph) => paragraph.role === "heading" || paragraph.headingLevel !== undefined)
+      .map((paragraph) => paragraph.paragraphId);
+    if (headingParagraphIds.length > 0) {
+      return resolveSemanticAlignmentFromTargetIds(projection, selector, headingParagraphIds, payload, {
+        high_confidence: headingParagraphIds.map((paragraphId) => ({
+          paragraph_id: paragraphId,
+          title_score: 10,
+          body_score: 0,
+          matched_signals: ["explicit_heading_level", "structural_heading"],
+          confidence: "high" as const
+        })),
+        gray_zone: [],
+        low_confidence: [],
+        diagnostics_summary: {
+          total_candidates: headingParagraphIds.length,
+          top_signal_counts: {
+            explicit_heading_level: headingParagraphIds.length,
+            structural_heading: headingParagraphIds.length
+          }
+        }
+      });
+    }
+  }
+
   const candidates = identifyTitleLikeCandidates(projection);
+  return resolveSemanticAlignmentFromCandidates(projection, selector, candidates, payload);
+}
+
+function resolveSemanticAlignmentFromCandidates(
+  projection: TemplateDocumentProjection,
+  selector: SupportedSemanticSelector,
+  candidates: TitleLikeCandidateResult,
+  payload: Record<string, unknown>
+): SemanticResolutionResult {
   const constraints = normalizeConstraints(payload);
   const highConfidence = candidates.high_confidence;
   const mediumConfidence = candidates.gray_zone;
@@ -109,13 +151,35 @@ export function resolveSemanticSelector(
     structurallyAnchored.length > 0
       ? structurallyAnchored.map((candidate) => candidate.paragraph_id)
       : [highConfidence[0]?.paragraph_id].filter((value): value is string => Boolean(value));
+  return resolveSemanticAlignmentFromTargetIds(
+    projection,
+    selector,
+    targetParagraphIds,
+    payload,
+    {
+      high_confidence: highConfidence,
+      gray_zone: mediumConfidence,
+      low_confidence: candidates.low_confidence,
+      diagnostics_summary: candidates.diagnostics_summary
+    }
+  );
+}
+
+function resolveSemanticAlignmentFromTargetIds(
+  projection: TemplateDocumentProjection,
+  selector: SupportedSemanticSelector,
+  targetParagraphIds: string[],
+  payload: Record<string, unknown>,
+  candidates: TitleLikeCandidateResult
+): SemanticResolutionResult {
+  const constraints = normalizeConstraints(payload);
   const baselineSourceParagraphIds = readBodyLikeParagraphIds(projection, targetParagraphIds);
   const baseline = deriveBodyStyleBaseline(projection, baselineSourceParagraphIds);
   if (!baseline) {
     return {
       selector,
       semantic_target_paragraph_ids: targetParagraphIds,
-      semantic_scores: [...highConfidence, ...mediumConfidence, ...candidates.low_confidence],
+      semantic_scores: [...candidates.high_confidence, ...candidates.gray_zone, ...candidates.low_confidence],
       low_confidence_reasons: ["Body style baseline could not be determined."],
       body_baseline: {
         source_paragraph_ids: baselineSourceParagraphIds,
@@ -129,7 +193,7 @@ export function resolveSemanticSelector(
   return {
     selector,
     semantic_target_paragraph_ids: targetParagraphIds,
-    semantic_scores: [...highConfidence, ...mediumConfidence, ...candidates.low_confidence],
+    semantic_scores: [...candidates.high_confidence, ...candidates.gray_zone, ...candidates.low_confidence],
     ...(missingAppliedFields.length > 0
       ? {
           low_confidence_reasons: [
@@ -299,8 +363,10 @@ function normalizeConstraints(payload: Record<string, unknown>): SemanticPayload
 }
 
 function constrainAppliedFields(syncFields: string[] | undefined): string[] {
-  const requested = syncFields?.length ? syncFields : [...FONT_SYNC_FIELDS];
-  return requested.filter((field): field is string => FONT_SYNC_FIELDS.includes(field as (typeof FONT_SYNC_FIELDS)[number]));
+  const requested = syncFields?.length ? syncFields : ["font_name", "font_size_pt", "is_bold", "is_italic"];
+  return requested.filter(
+    (field): field is string => CONSTRAINED_SYNC_FIELDS.includes(field as (typeof CONSTRAINED_SYNC_FIELDS)[number])
+  );
 }
 
 function readProjectedField(

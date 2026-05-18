@@ -10,7 +10,7 @@ export interface NodeSelector {
 
 export type WriteTargetSpec =
   | { kind: "selector"; selector: NodeSelector }
-  | { kind: "semantic_selector"; semantic: "title_like_paragraphs" | "body_like_paragraphs" }
+  | { kind: "semantic_selector"; semantic: "semantic_heading" | "title_like_paragraphs" | "body_like_paragraphs" }
   | { kind: "node_ids"; node_ids: string[] }
   | { kind: "patch_targets"; patch_target_ids: string[]; patch_part_paths?: string[] };
 
@@ -54,7 +54,7 @@ export interface SelectorTargetAnalysis {
   missing_node_ids: string[];
   missing_patch_target_ids: string[];
   skip_reason?: "no_writable_runs";
-  semantic_selector?: "title_like_paragraphs" | "body_like_paragraphs";
+  semantic_selector?: "semantic_heading" | "title_like_paragraphs" | "body_like_paragraphs";
   semantic_target_paragraph_ids?: string[];
   semantic_scores?: Array<{
     paragraph_id: string;

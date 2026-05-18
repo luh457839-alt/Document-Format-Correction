@@ -107,11 +107,13 @@ export function buildChatProjection(
       nodeIds
     },
     diagnostics: {
+      kind: "chat",
       ...(options.focusRegexProbe ? { focusRegexProbe: options.focusRegexProbe } : {}),
       estimatedChars,
       ...(options.textBudget !== undefined ? { textBudget: options.textBudget } : {}),
       budgetStatus: "fit",
-      degradationSteps
+      degradationSteps,
+      paragraphCount: projection.paragraphs.length
     }
   };
 }

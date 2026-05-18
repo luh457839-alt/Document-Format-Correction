@@ -154,4 +154,35 @@ describe("phase 1 projections", () => {
       })
     ).toThrow(/E_TEMPLATE_PROJECTION_BUDGET_EXCEEDED/);
   });
+
+  it("keeps chat/template projection diagnostics aligned for the same budget intent", () => {
+    const bundle = createProjectionBudgetStressBundle();
+
+    const chatProjection = buildChatProjection(bundle, {
+      focusRegexProbe: "预算测试",
+      textBudget: 160,
+      neighborWindow: 2,
+      emphasisLimit: 8,
+      minNeighborWindow: 0,
+      backgroundPreviewLength: 40,
+      minBackgroundPreviewLength: 12
+    });
+    const templateProjection = buildTemplateProjection(bundle, {
+      localContextWindow: 2,
+      includeSemanticFeatures: true,
+      textBudget: 220,
+      minLocalContextWindow: 0,
+      maxBatchBudget: 140
+    });
+
+    expect(chatProjection.diagnostics.budgetStatus).toBe("fit");
+    expect(templateProjection.diagnostics.budgetStatus).toBe("fit");
+    expect(chatProjection.traceability.paragraphIds).toEqual(bundle.structure_index.paragraphs.map((paragraph) => paragraph.id));
+    expect(templateProjection.batches.flatMap((batch) => batch.paragraphIds)).toEqual(
+      bundle.structure_index.paragraphs.map((paragraph) => paragraph.id)
+    );
+    expect(chatProjection.paragraphs.map((paragraph) => paragraph.paragraphId)).toEqual(
+      templateProjection.paragraphs.map((paragraph) => paragraph.paragraphId)
+    );
+  });
 });

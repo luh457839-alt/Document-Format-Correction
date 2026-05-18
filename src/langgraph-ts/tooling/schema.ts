@@ -59,7 +59,7 @@ const targetSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("semantic_selector"),
-      semantic: z.enum(["title_like_paragraphs", "body_like_paragraphs"])
+      semantic: z.enum(["semantic_heading", "title_like_paragraphs", "body_like_paragraphs"])
     })
     .strict(),
   z
