@@ -7,7 +7,7 @@
 `0.4.0` 版本对应当前仓库的真实形态，而不是历史设想：
 
 - 它是本地桌面应用，不是在线 SaaS。
-- 当前系统形态是“legacy 宿主兼容层 + `src/langgraph-ts/` 新主链”。
+- 当前系统形态是“legacy 宿主兼容层 + `src/langgraph-ts/` 新主链”，其中 `archive/legacy/` 只保留迁移参考价值，不再定义当前行为。
 - 仓库当前仍处于施工中，重构在持续推进，当前 README 只描述已落地的真实能力。
 - 旧主链是 `React 前端 + Python 宿主 + TypeScript Agent Runtime`，已归档到 `archive/legacy/`。
 - 新实现主战场是 `src/langgraph-ts/`，当前已承载文档解析、投影、provider adapter、runtime graph、模板分类、写类 Tool 编译与真实 DOCX 物化主链。

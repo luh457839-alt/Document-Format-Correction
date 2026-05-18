@@ -36,6 +36,8 @@ Phase 1 在 `src/langgraph-ts` 中已经完成新的文档解析与观察模型�
 - `archive/legacy/ts-runtime/src`
 - `archive/legacy/ts-runtime/tests`
 
+这些归档目录只保留迁移参考价值，用于回看旧实现拆分过程与历史结构；当前行为定义、开发入口和验收口径均不再以 `archive/legacy/` 为准。
+
 同时，以下旧目录已从新主链移除：
 
 - `src/python`
@@ -152,4 +154,4 @@ Phase 1 当前对应 4 个基线测试文件：
 
 ## 一句话结论
 
-Phase 1 已完成「新解析基线 + projection 基线 + legacy 归档边界」三件事。后续所有写入、编排和物化能力，都应建立在这套 bundle / projection / compat 基线之上，而不是重新回接旧运行时目录。
+Phase 1 已完成「新解析基线 + projection 基线 + legacy 归档边界」三件事。后续所有写入、编排和物化能力，都应建立在这套 bundle / projection / compat 基线之上，而不是重新回接旧运行时目录；`archive/legacy/` 只用于迁移参考，不再承担当前正确行为的解释职责。

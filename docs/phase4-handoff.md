@@ -2,7 +2,7 @@
 
 ## 范围
 
-Phase 4 现在把 Phase 2 已能稳定编译的主要 patch type 真正落到了 `package_snapshot`，并在 `materialize` 前新增了显式的 relationship reconcile。
+Phase 4 现在把 Phase 2 已能稳定编译的主要 patch type 真正落到了 `package_snapshot`，并在 `materialize` 前新增了显式的 relationship reconcile。`archive/legacy/` 在本阶段只保留迁移参考价值，不再参与当前 relationship 或 materialize 行为定义。
 
 保留边界：
 
@@ -68,3 +68,7 @@ relationship reconcile 当前覆盖：
 - hyperlink 若要真正支持“新增外链”，需要引入显式 target 元数据，而不是依赖 reconcile 猜测
 - media/header/footer 目前只支持“唯一候选 part”场景，复杂资源建模仍需下一阶段扩展
 - 当前突变层仍是定向同步，不是全量 AST 重建；如果后续要支持更深的结构改写，应考虑引入更系统的局部重建或 in-memory reparse
+
+## 一句话结论
+
+Phase 4 已把当前主链的真实物化与 relationship reconcile 边界写实到位；后续新增写入能力仍应建立在 `src/langgraph-ts` 的现行合同、handoff 与测试之上，而不是回到 `archive/legacy/` 查找当前正确行为定义。

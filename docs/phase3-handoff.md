@@ -6,7 +6,7 @@
 
 ## 本阶段已落地结果
 
-Phase 3 已在 `src/langgraph-ts` 内完成新的 LangGraph 主链最小闭环，且未回接旧 `AgentRuntime` 主链。
+Phase 3 已在 `src/langgraph-ts` 内完成新的 LangGraph 主链最小闭环，且未回接旧 `AgentRuntime` 主链。`archive/legacy/` 目录在本阶段只保留迁移参考价值，不再作为当前 runtime 行为定义来源。
 
 当前已落地内容如下：
 
@@ -220,4 +220,4 @@ Phase 4 建议从以下位置继续：
 
 ## 一句话结论
 
-Phase 3 已完成「LangGraph 主链接管 + Phase 2 Tool 内核复用 + 最小真实文档写入闭环」，当前系统已经能以新的图执行架构真实完成 `chat` / `template` / `clarify` 三条路径，但真实物化能力仍刻意收敛在最小可用范围，全面 relationship 调和仍属于 Phase 4。
+Phase 3 已完成「LangGraph 主链接管 + Phase 2 Tool 内核复用 + 最小真实文档写入闭环」，当前系统已经能以新的图执行架构真实完成 `chat` / `template` / `clarify` 三条路径，但真实物化能力仍刻意收敛在最小可用范围，全面 relationship 调和仍属于 Phase 4；现行行为应继续以 `src/langgraph-ts` 合同、handoff 与测试断言为准，而不是以 `archive/legacy/` 中的旧实现为准。
