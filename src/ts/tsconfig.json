@@ -7,8 +7,24 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "src",
-    "types": ["node", "vitest/globals"]
+    "rootDir": "..",
+    "types": ["node", "vitest/globals"],
+    "baseUrl": ".",
+    "paths": {
+      "jszip": ["node_modules/jszip/lib/index.js"],
+      "@xmldom/xmldom": ["node_modules/@xmldom/xmldom/lib/index.js"],
+      "zod": ["node_modules/zod/index.d.ts"],
+      "@langchain/core": ["node_modules/@langchain/core/dist/index.d.ts"],
+      "@langchain/core/*": ["node_modules/@langchain/core/*"],
+      "@langchain/langgraph": ["node_modules/@langchain/langgraph/dist/index.d.ts"],
+      "@langchain/langgraph/*": ["node_modules/@langchain/langgraph/*"],
+      "@langchain/langgraph/prebuilt": ["node_modules/@langchain/langgraph/dist/prebuilt/index.d.ts"],
+      "@langchain/openai": ["node_modules/@langchain/openai/dist/index.d.ts"],
+      "@langchain/openai/*": ["node_modules/@langchain/openai/*"],
+      "@langchain/langgraph-checkpoint-sqlite": ["node_modules/@langchain/langgraph-checkpoint-sqlite/dist/index.d.ts"],
+      "better-sqlite3": ["node_modules/better-sqlite3/lib/index.js"]
+    }
   },
-  "include": ["src"]
+  "include": ["../langgraph-ts/**/*.ts"],
+  "exclude": ["../langgraph-ts/tests/**/*.ts"]
 }

@@ -4,6 +4,8 @@
 
 `fixed-template-contract.sample.json` 现在是一份面向模板子系统 `2.0` 契约的 Patch DSL 示例。
 
+这份 sample 的外部接口边界以仓库根目录的《[接口与外部契约定义](../../接口与外部契约定义.md)》为准；本文只解释模板 JSON 本身怎么写，不定义前端任务结果或 Web API 返回 shape。
+
 这份示例的目标有两个：
 
 - 说明固定模板在新执行模型下应该怎样写 `patch_blocks`。
@@ -91,6 +93,11 @@
 - `semantic_blocks`：负责 paragraph 级分类覆盖。
 - `derived_semantics`：负责业务语义聚合或细分，不改变原子 owner。
 - `patch_blocks`：负责真正可执行的 patch DSL。
+
+还需要额外强调一条作者边界：
+
+- 模板 JSON 只写作者输入契约。
+- 运行态诊断、冲突段、未匹配段、refinement summary 与输出路径不写回模板 JSON。
 
 因此，不要把示例字段当规则，也不要把分类字段和写入字段混写在一起。
 

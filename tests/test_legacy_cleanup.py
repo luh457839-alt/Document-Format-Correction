@@ -63,6 +63,16 @@ class LegacyCleanupTest(unittest.TestCase):
 
     def test_legacy_chat_window_entry_is_removed(self) -> None:
         self.assertFalse(Path("src/python/gui/chat_window.py").exists())
+        self.assertTrue(Path("archive/legacy/python-host/gui").exists())
+
+    def test_legacy_runtime_is_archived(self) -> None:
+        self.assertTrue(Path("archive/legacy/python-host").exists())
+        self.assertTrue(Path("archive/legacy/frontend").exists())
+        self.assertTrue(Path("archive/legacy/ts-runtime/src").exists())
+        self.assertTrue(Path("archive/legacy/ts-runtime/tests").exists())
+        self.assertFalse(Path("src/python").exists())
+        self.assertFalse(Path("src/frontend").exists())
+        self.assertFalse(Path("src/ts/src").exists())
 
 
 if __name__ == "__main__":

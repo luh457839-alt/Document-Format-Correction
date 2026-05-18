@@ -7,14 +7,22 @@
 `0.4.0` 版本对应当前仓库的真实形态，而不是历史设想：
 
 - 它是本地桌面应用，不是在线 SaaS。
-- 主链是 `React 前端 + Python 宿主 + TypeScript Agent Runtime`。
+- 当前系统形态是“legacy 宿主兼容层 + `src/langgraph-ts/` 新主链”。
+- 仓库当前仍处于施工中，重构在持续推进，当前 README 只描述已落地的真实能力。
+- 旧主链是 `React 前端 + Python 宿主 + TypeScript Agent Runtime`，已归档到 `archive/legacy/`。
+- 新实现主战场是 `src/langgraph-ts/`，当前已承载文档解析、投影、provider adapter、runtime graph、模板分类、写类 Tool 编译与真实 DOCX 物化主链。
 - TypeScript 负责会话状态、模式判定、规划、执行编排、任务审计和运行预算。
 - Python 负责桌面 GUI、本地 Web API、TS CLI 桥接、Python 工具执行和最终 DOCX 物化。
 - 文档 observation 已统一到一份共享 schema，Python 路径和 TS 原生 fallback 都向上暴露同一结构。
 - 聊天式处理和模板式处理共享同一套宿主与运行时基础设施。
 
-本次 `0.4.0` 迭代补齐了一个关键行为：
+本次 `0.4.0` 迭代补齐了当前主链的关键能力：
 
+- `projection_intent` 已进入 runtime 输入与状态，`focus_regex_probe`、chat/template 预算和邻域窗口会真实影响投影构建。
+- `chat_projection` 已支持预算估算、焦点优先和固定降级顺序；超预算或 traceability / 顺序失配会返回结构化失败，而不是静默继续。
+- `template_projection` 已支持分类必需字段保留、批次拆分、预算降级与失败保护；`template_classifier` 真实消费 `template_projection.batches`，不再信任 `template_config.semantic_tags`。
+- provider 侧 `write_document` schema 已收紧，`semantic_selector` 当前只正式支持 `title_like_paragraphs` 和 `body_like_paragraphs`，语义 payload 也只接受受限字段。
+- provider `read -> write` 回放现在会返回 `chat_projection` / `template_projection` 摘要；runtime 对 `E_GRAPH_RECURSION_LIMIT` 和 provider 兼容性失败会保留结构化 diagnostics。
 - 共享写入链路默认会跳过“结构上命中但没有可写 text run”的段落，而不是整次任务直接失败。
 - `paragraph_ids`、`body`、`heading`、`list_item` 等段落级目标现在统一采用“过滤可写目标后继续执行”的语义。
 - 当目标全部不可写时，系统会明确返回“过滤后没有可写目标”，而不是误报为可写性硬错误。
@@ -34,23 +42,20 @@
 - 模式判定：自动区分 `chat`、`inspect`、`execute` 以及需要先澄清的场景。
 - 格式执行：支持字体、字号、行距、颜色、对齐、加粗、斜体、下划线、删除线、高亮、全大写、段前段后、首行缩进、页面设置等能力。
 - 结构操作：支持批量范围写入，也支持段落合并与拆分。
-- 语义范围：支持 `正文`、`标题`、`列表项`、`全文` 和 `指定段落` 等范围。
+- 语义写入：`semantic_selector` 当前正式支持 `title_like_paragraphs` 和 `body_like_paragraphs`，可用于标题候选识别和“标题同步正文字体”等受限语义写入。
+- 投影系统：chat/template 两条链路都会先构建投影，并支持预算、降级、批次与结构化 diagnostics。
 - 模板工作区：支持导入 DOCX、选择 JSON 模板、启动模板任务并打开输出结果。
 - 本地 API：支持同步消息、异步消息、任务状态轮询、模板任务轮询和配置读写。
 
 ## 仓库结构
 
-- `src/frontend/`：桌面内嵌 Web UI，负责聊天界面、模板工作区、设置面板和会话侧栏。
-- `src/python/gui/`：Qt 窗口与本地 Web API。
-- `src/python/api/`：TS CLI bridge、模板 bridge、Python tool runner。
-- `src/python/core/`：配置、路径和 Python 侧基础能力。
-- `src/python/tools/`：Python 工具实现。
-- `src/ts/src/runtime/`：会话服务、运行时、审计、状态存储、selector 扩展。
-- `src/ts/src/document-tooling/`：observation 收口、策略和 facade。
-- `src/ts/src/document-execution/`：执行 facade。
-- `src/ts/src/templates/`：模板契约、分类、校验、规划和执行。
+- `src/langgraph-ts/`：当前主链代码，包含 document-core、contracts、projections、model、runtime、tooling 以及分层回归测试。
+- `src/ts/`：新骨架沿用的 TypeScript 构建与测试包配置。
+- `archive/legacy/python-host/`：旧 Python 宿主与工具链。
+- `archive/legacy/frontend/`：旧桌面前端。
+- `archive/legacy/ts-runtime/`：旧 TypeScript runtime 与测试。
 - `docs/`：用户与开发者文档。
-- `tests/`：Python 侧测试。
+- `tests/`：根级 Python 测试与回归测试。
 
 ## 环境要求
 
@@ -330,9 +335,14 @@ npm run build
 
 建议先看这些入口：
 
+- `src/langgraph-ts/runtime/graph.ts`
+- `src/langgraph-ts/runtime/contracts.ts`
+- `src/langgraph-ts/model/provider-adapter.ts`
+- `src/langgraph-ts/projections/build-chat-projection.ts`
+- `src/langgraph-ts/projections/build-template-projection.ts`
 - `scripts/launch_gui.py`
-- `src/python/gui/web_window.py`
-- `src/python/gui/web_api.py`
-- `src/frontend/store/useChatStore.ts`
-- `src/ts/src/runtime/session-service.ts`
-- `src/ts/src/runtime/engine.ts`
+- `archive/legacy/python-host/gui/web_window.py`
+- `archive/legacy/python-host/gui/web_api.py`
+- `archive/legacy/frontend/store/useChatStore.ts`
+- `archive/legacy/ts-runtime/src/runtime/session-service.ts`
+- `archive/legacy/ts-runtime/src/runtime/engine.ts`

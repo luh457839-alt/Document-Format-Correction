@@ -14,7 +14,12 @@ __pycache__/
 .tmp/
 .idea/
 .codex/
+.worktrees/
+worktrees/
 agent_workspace/
+archive/
+docs/.phase3-media/
+src/.vite/
 config.json
 data/*.db
 sessions/*.db
