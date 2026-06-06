@@ -13,7 +13,9 @@ __pycache__/
 .venv/
 .tmp/
 .idea/
-.codex/
+.codex/*
+!.codex/skills/
+!.codex/skills/**
 .worktrees/
 worktrees/
 agent_workspace/
@@ -29,6 +31,7 @@ output/
 src/frontend/node_modules/
 src/frontend/dist/
 src/frontend/tsconfig.tsbuildinfo
+src/node_modules/
 src/ts/node_modules/
 src/ts/dist/
 *.tsbuildinfo

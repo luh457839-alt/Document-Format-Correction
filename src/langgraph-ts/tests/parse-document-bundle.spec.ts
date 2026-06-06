@@ -9,7 +9,7 @@ import { parseDocumentBundle } from "../document-core/parse-document-bundle.js";
 const tempDirs: string[] = [];
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "langgraph-phase1-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "langgraph-bundle-"));
   tempDirs.push(dir);
   return dir;
 }

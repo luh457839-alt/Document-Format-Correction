@@ -11,7 +11,7 @@ import {
   expectNoReasoningCompatibilityRegression,
   expectRealModelOutputAndStages
 } from "./real-model-test-helpers.js";
-import { runPhase3Graph } from "../runtime/graph.js";
+import { runDocumentAgentGraph } from "../runtime/graph.js";
 import { parseWriteToolInput } from "../tooling/schema.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -172,7 +172,7 @@ describe("real model smoke", () => {
     const fixture = await createRealDocxFixture(getRealDocxSample("standard"));
     cleanups.push(() => fixture.cleanup());
 
-    const result = await runPhase3Graph({
+    const result = await runDocumentAgentGraph({
       thread_id: "real-model-standard",
       document_path: fixture.docxPath,
       output_path: fixture.outputPath("real-model-standard"),
@@ -192,7 +192,7 @@ describe("real model smoke", () => {
         "provider_read_loop_exhausted"
       ]);
     }
-  }, 90000);
+  }, 180000);
 
   it("works for style-oriented instruction on 样式与编号差异样本", async ({ skip }) => {
     if (!maybeModel.model) {
@@ -201,7 +201,7 @@ describe("real model smoke", () => {
     const fixture = await createRealDocxFixture(getRealDocxSample("stylesNumbering"));
     cleanups.push(() => fixture.cleanup());
 
-    const result = await runPhase3Graph({
+    const result = await runDocumentAgentGraph({
       thread_id: "real-model-style",
       document_path: fixture.docxPath,
       output_path: fixture.outputPath("real-model-style"),
@@ -214,7 +214,7 @@ describe("real model smoke", () => {
     expectRealModelOutputAndStages(result, ["write_tool", "reconcile", "materialize"]);
     expect(result.state.diagnostics.some((entry) => entry.stage === "write_tool")).toBe(true);
     expectNoReasoningCompatibilityRegression(result);
-  }, 90000);
+  }, 180000);
 
   it("reaches reconcile/materialize for settings request on settings敏感样本", async ({ skip }) => {
     if (!maybeModel.model) {
@@ -223,7 +223,7 @@ describe("real model smoke", () => {
     const fixture = await createRealDocxFixture(getRealDocxSample("settings"));
     cleanups.push(() => fixture.cleanup());
 
-    const result = await runPhase3Graph({
+    const result = await runDocumentAgentGraph({
       thread_id: "real-model-settings",
       document_path: fixture.docxPath,
       output_path: fixture.outputPath("real-model-settings"),
@@ -244,5 +244,5 @@ describe("real model smoke", () => {
         "set_settings_flag requires settings"
       ]);
     }
-  }, 120000);
+  }, 180000);
 });

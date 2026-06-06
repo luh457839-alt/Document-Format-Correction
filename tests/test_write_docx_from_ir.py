@@ -49,6 +49,9 @@ class WriteDocxFromIrTest(unittest.TestCase):
             written_run = result.paragraphs[0].runs[0]
             self.assertEqual(written_run.font.size.pt, 22.0)
             self.assertEqual(written_run.font.name, "Arial")
+            sz_cs = written_run._element.rPr.find(docx.oxml.ns.qn("w:szCs"))
+            self.assertIsNotNone(sz_cs)
+            self.assertEqual(sz_cs.get(docx.oxml.ns.qn("w:val")), "44")
 
     def test_in_place_font_change_preserves_existing_size(self) -> None:
         docx = self._import_docx()

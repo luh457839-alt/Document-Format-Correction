@@ -1,13 +1,13 @@
 {
   "chat": {
-    "base_url": "http://localhost:8080/v1",
-    "api_key": "sk-...",
-    "model": "model_name"
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "sk-your-api-key-here",
+    "model": "deepseek-chat"
   },
   "planner": {
-    "base_url": "http://localhost:8080/v1",
-    "api_key": "sk-...",
-    "model": "model_name",
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "sk-your-api-key-here",
+    "model": "deepseek-chat",
     "timeout_ms": null,
     "step_timeout_ms": 60000,
     "task_timeout_ms": null,

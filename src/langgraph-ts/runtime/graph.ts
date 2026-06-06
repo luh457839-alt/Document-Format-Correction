@@ -19,26 +19,26 @@ import type { WriteTargetSpec } from "../tooling/contracts.js";
 import { analyzeWriteTarget } from "../tooling/target-resolution.js";
 import { compileWriteToolPatchSet } from "../tooling/patch-compilation.js";
 import type { DocxPatchTarget } from "../document-core/docx-observation-schema.js";
-import { PHASE3_STRONG_SYSTEM_PROMPT } from "../model/provider-adapter.js";
+import { DOCUMENT_AGENT_SYSTEM_PROMPT } from "../model/provider-adapter.js";
 import { applyPatchOperationsToBundle } from "./bundle-mutation.js";
 import type {
-  Phase3AgentState,
-  Phase3Checkpointer,
-  Phase3Mode,
-  Phase3RunResult,
-  Phase3RuntimeDeps,
-  Phase3RuntimeInput,
-  Phase3StoredAgentState
+  AgentState,
+  RuntimeCheckpointer,
+  RuntimeMode,
+  RunResult,
+  RuntimeDeps,
+  RuntimeInput,
+  StoredAgentState
 } from "./contracts.js";
 import { materializeBundle } from "./materialize.js";
 import { reconcileBundleRelationships } from "./relationship-reconcile.js";
 
-const Phase3State = Annotation.Root({
+const DocumentAgentGraph = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
     reducer: (left, right) => left.concat(right),
     default: () => []
   }),
-  mode: Annotation<Phase3Mode | undefined>({
+  mode: Annotation<RuntimeMode | undefined>({
     reducer: (_left, right) => right,
     default: () => undefined
   }),
@@ -50,19 +50,19 @@ const Phase3State = Annotation.Root({
     reducer: (_left, right) => right,
     default: () => undefined
   }),
-  document_bundle: Annotation<Phase3AgentState["document_bundle"]>({
+  document_bundle: Annotation<AgentState["document_bundle"]>({
     reducer: (_left, right) => right,
     default: () => undefined
   }),
-  chat_projection: Annotation<Phase3AgentState["chat_projection"]>({
+  chat_projection: Annotation<AgentState["chat_projection"]>({
     reducer: (_left, right) => right,
     default: () => undefined
   }),
-  template_projection: Annotation<Phase3AgentState["template_projection"]>({
+  template_projection: Annotation<AgentState["template_projection"]>({
     reducer: (_left, right) => right,
     default: () => undefined
   }),
-  template_config: Annotation<Phase3AgentState["template_config"]>({
+  template_config: Annotation<AgentState["template_config"]>({
     reducer: (_left, right) => right,
     default: () => undefined
   }),
@@ -74,28 +74,28 @@ const Phase3State = Annotation.Root({
     reducer: (left, right) => left.concat(right),
     default: () => []
   }),
-  diagnostics: Annotation<Phase3AgentState["diagnostics"]>({
+  diagnostics: Annotation<AgentState["diagnostics"]>({
     reducer: (left, right) => left.concat(right),
     default: () => []
   }),
-  artifact_refs: Annotation<Phase3AgentState["artifact_refs"]>({
+  artifact_refs: Annotation<AgentState["artifact_refs"]>({
     reducer: (left, right) => left.concat(right),
     default: () => []
   }),
-  projection_intent: Annotation<Phase3AgentState["projection_intent"]>({
+  projection_intent: Annotation<AgentState["projection_intent"]>({
     reducer: (_left, right) => right,
     default: () => undefined
   })
 });
 
-export async function runPhase3Graph(input: Phase3RuntimeInput, deps: Phase3RuntimeDeps): Promise<Phase3RunResult> {
+export async function runDocumentAgentGraph(input: RuntimeInput, deps: RuntimeDeps): Promise<RunResult> {
   const checkpoint = deps.checkpoint;
-  const restored = checkpoint ? restoreStoredState((await checkpoint.load(input.thread_id)) as Phase3StoredAgentState | undefined) : undefined;
+  const restored = checkpoint ? restoreStoredState((await checkpoint.load(input.thread_id)) as StoredAgentState | undefined) : undefined;
   const restoredArtifactCount = restored?.artifact_refs.length ?? 0;
   const initialMessages = restored?.messages?.length
     ? restored.messages.concat([new HumanMessage(input.user_message)])
-    : [new SystemMessage(PHASE3_STRONG_SYSTEM_PROMPT), new HumanMessage(input.user_message)];
-  const initialState: typeof Phase3State.State = {
+    : [new SystemMessage(DOCUMENT_AGENT_SYSTEM_PROMPT), new HumanMessage(input.user_message)];
+  const initialState: typeof DocumentAgentGraph.State = {
     messages: initialMessages,
     mode: restored?.mode,
     document_path: input.document_path,
@@ -111,7 +111,7 @@ export async function runPhase3Graph(input: Phase3RuntimeInput, deps: Phase3Runt
     artifact_refs: restored?.artifact_refs ?? []
   };
 
-  const graph = new StateGraph(Phase3State)
+  const graph = new StateGraph(DocumentAgentGraph)
     .addNode("intent_router", async (state) => routeIntent(state, input))
     .addNode("document_load_and_parse", async (state) => loadDocumentBundle(state, input))
     .addNode("projection_builder", async (state) => buildProjections(state))
@@ -133,13 +133,13 @@ export async function runPhase3Graph(input: Phase3RuntimeInput, deps: Phase3Runt
     .addEdge("materialize_and_reconcile", END)
     .compile();
 
-  let state: typeof Phase3State.State;
+  let state: typeof DocumentAgentGraph.State;
   try {
     state = await graph.invoke(initialState, { recursionLimit: 40 });
   } catch (error) {
     if (isGraphRecursionLimitError(error)) {
       const failedState = {
-        ...(initialState as Phase3AgentState),
+        ...(initialState as AgentState),
         messages: initialMessages.concat([
           new AIMessage("runtime_graph_recursion_limit: model did not reach a stop condition before the graph recursion limit.")
         ]),
@@ -150,7 +150,7 @@ export async function runPhase3Graph(input: Phase3RuntimeInput, deps: Phase3Runt
             message: error instanceof Error ? error.message : String(error)
           }
         ])
-      } satisfies Phase3AgentState;
+      } satisfies AgentState;
       if (checkpoint) {
         await checkpoint.save(input.thread_id, storeState(failedState));
       }
@@ -163,12 +163,12 @@ export async function runPhase3Graph(input: Phase3RuntimeInput, deps: Phase3Runt
     throw error;
   }
   if (checkpoint) {
-    await checkpoint.save(input.thread_id, storeState(state as Phase3AgentState));
+    await checkpoint.save(input.thread_id, storeState(state as AgentState));
   }
-  const reply = extractReply((state as Phase3AgentState).messages);
-  const outputDocx = (state as Phase3AgentState).artifact_refs.slice(restoredArtifactCount).find((artifact) => artifact.kind === "docx")?.path;
+  const reply = extractReply((state as AgentState).messages);
+  const outputDocx = (state as AgentState).artifact_refs.slice(restoredArtifactCount).find((artifact) => artifact.kind === "docx")?.path;
   return {
-    state: state as Phase3AgentState,
+    state: state as AgentState,
     reply,
     artifacts: {
       ...(outputDocx ? { output_docx_path: outputDocx } : {})
@@ -176,7 +176,7 @@ export async function runPhase3Graph(input: Phase3RuntimeInput, deps: Phase3Runt
   };
 }
 
-function routeIntent(state: typeof Phase3State.State, input: Phase3RuntimeInput): Partial<typeof Phase3State.State> {
+function routeIntent(state: typeof DocumentAgentGraph.State, input: RuntimeInput): Partial<typeof DocumentAgentGraph.State> {
   if (input.template_task) {
     return {
       mode: "template",
@@ -192,15 +192,15 @@ function routeIntent(state: typeof Phase3State.State, input: Phase3RuntimeInput)
 }
 
 async function loadDocumentBundle(
-  state: typeof Phase3State.State,
-  input: Phase3RuntimeInput
-): Promise<Partial<typeof Phase3State.State>> {
+  state: typeof DocumentAgentGraph.State,
+  input: RuntimeInput
+): Promise<Partial<typeof DocumentAgentGraph.State>> {
   if (state.document_bundle && state.document_path === input.document_path) {
     return {};
   }
   const bundle = await parseDocumentBundle({
     docxPath: input.document_path,
-    mediaDir: path.join(path.dirname(input.document_path), ".phase3-media")
+    mediaDir: path.join(path.dirname(input.document_path), ".runtime-media")
   });
   return {
     document_path: input.document_path,
@@ -209,12 +209,12 @@ async function loadDocumentBundle(
   };
 }
 
-function buildProjections(state: typeof Phase3State.State): Partial<typeof Phase3State.State> {
+function buildProjections(state: typeof DocumentAgentGraph.State): Partial<typeof DocumentAgentGraph.State> {
   if (!state.document_bundle) {
     return {};
   }
-  const diagnostics: Phase3AgentState["diagnostics"] = [];
-  const update: Partial<typeof Phase3State.State> = {};
+  const diagnostics: AgentState["diagnostics"] = [];
+  const update: Partial<typeof DocumentAgentGraph.State> = {};
 
   try {
     update.chat_projection = buildChatProjection(state.document_bundle, {
@@ -244,10 +244,10 @@ function buildProjections(state: typeof Phase3State.State): Partial<typeof Phase
 }
 
 async function reasoningNode(
-  state: typeof Phase3State.State,
-  input: Phase3RuntimeInput,
-  deps: Phase3RuntimeDeps
-): Promise<Partial<typeof Phase3State.State>> {
+  state: typeof DocumentAgentGraph.State,
+  input: RuntimeInput,
+  deps: RuntimeDeps
+): Promise<Partial<typeof DocumentAgentGraph.State>> {
   if (!state.chat_projection) {
     return {
       messages: [new AIMessage("聊天投影构建失败，无法继续推理。")]
@@ -261,7 +261,7 @@ async function reasoningNode(
   };
 }
 
-function classifyTemplate(state: typeof Phase3State.State): Partial<typeof Phase3State.State> {
+function classifyTemplate(state: typeof DocumentAgentGraph.State): Partial<typeof DocumentAgentGraph.State> {
   if (!state.template_projection) {
     return {
       messages: [new AIMessage("模板投影构建失败，无法执行模板分类。")],
@@ -300,7 +300,7 @@ function classifyTemplate(state: typeof Phase3State.State): Partial<typeof Phase
   };
 }
 
-function templateEngineNode(state: typeof Phase3State.State): Partial<typeof Phase3State.State> {
+function templateEngineNode(state: typeof DocumentAgentGraph.State): Partial<typeof DocumentAgentGraph.State> {
   const config = state.template_config;
   if (!config) {
     return {
@@ -329,10 +329,10 @@ function templateEngineNode(state: typeof Phase3State.State): Partial<typeof Pha
 }
 
 async function directResponseNode(
-  state: typeof Phase3State.State,
-  input: Phase3RuntimeInput,
-  deps: Phase3RuntimeDeps
-): Promise<Partial<typeof Phase3State.State>> {
+  state: typeof DocumentAgentGraph.State,
+  input: RuntimeInput,
+  deps: RuntimeDeps
+): Promise<Partial<typeof DocumentAgentGraph.State>> {
   const message = await deps.model.invoke(state.messages, input);
   const diagnostics = extractModelDiagnostics(message);
   return {
@@ -341,7 +341,7 @@ async function directResponseNode(
   };
 }
 
-async function materializeNode(state: typeof Phase3State.State): Promise<Partial<typeof Phase3State.State>> {
+async function materializeNode(state: typeof DocumentAgentGraph.State): Promise<Partial<typeof DocumentAgentGraph.State>> {
   const outputPath = state.output_path;
   if (!outputPath || !state.document_bundle) {
     return {};
@@ -371,7 +371,7 @@ async function materializeNode(state: typeof Phase3State.State): Promise<Partial
   };
 }
 
-function routeByMode(state: typeof Phase3State.State): string {
+function routeByMode(state: typeof DocumentAgentGraph.State): string {
   if (state.mode === "template") {
     return "template_classifier";
   }
@@ -381,7 +381,7 @@ function routeByMode(state: typeof Phase3State.State): string {
   return "reasoning";
 }
 
-function reactContinueOrFinish(state: typeof Phase3State.State): string {
+function reactContinueOrFinish(state: typeof DocumentAgentGraph.State): string {
   const last = state.messages.at(-1);
   if (last instanceof AIMessage && Array.isArray(last.tool_calls) && last.tool_calls.length > 0) {
     return "tools";
@@ -392,7 +392,7 @@ function reactContinueOrFinish(state: typeof Phase3State.State): string {
   return END;
 }
 
-function templateContinueOrFinish(state: typeof Phase3State.State): string {
+function templateContinueOrFinish(state: typeof DocumentAgentGraph.State): string {
   const last = state.messages.at(-1);
   if (last instanceof AIMessage && Array.isArray(last.tool_calls) && last.tool_calls.length > 0) {
     return "tools";
@@ -400,7 +400,7 @@ function templateContinueOrFinish(state: typeof Phase3State.State): string {
   return shouldMaterialize(state) ? "materialize_and_reconcile" : END;
 }
 
-function invokeWriteTools(state: typeof Phase3State.State): Partial<typeof Phase3State.State> {
+function invokeWriteTools(state: typeof DocumentAgentGraph.State): Partial<typeof DocumentAgentGraph.State> {
   const last = state.messages.at(-1);
   if (!(last instanceof AIMessage) || !Array.isArray(last.tool_calls) || last.tool_calls.length === 0) {
     return {};
@@ -441,7 +441,7 @@ function invokeWriteTools(state: typeof Phase3State.State): Partial<typeof Phase
     );
     toolMessages.push(toolMessage);
 
-    const stateUpdate = toolMessage.artifact?.state_update as Partial<typeof Phase3State.State> | undefined;
+    const stateUpdate = toolMessage.artifact?.state_update as Partial<typeof DocumentAgentGraph.State> | undefined;
     if (stateUpdate?.document_bundle) {
       workingBundle = stateUpdate.document_bundle;
     }
@@ -462,7 +462,7 @@ type WriteDocumentToolInput = {
 };
 
 function executeWriteDocumentCall(
-  bundle: Phase3AgentState["document_bundle"],
+  bundle: AgentState["document_bundle"],
   executedPatchKeys: string[],
   rawInput: WriteDocumentToolInput,
   toolCallId: string
@@ -563,14 +563,14 @@ function executeWriteDocumentCall(
 }
 
 function mergeToolArtifacts(
-  _state: typeof Phase3State.State,
+  _state: typeof DocumentAgentGraph.State,
   toolMessages: ToolMessage[]
-): Partial<typeof Phase3State.State> {
-  const update: Partial<typeof Phase3State.State> = {
+): Partial<typeof DocumentAgentGraph.State> {
+  const update: Partial<typeof DocumentAgentGraph.State> = {
     messages: toolMessages
   };
   for (const message of toolMessages) {
-    const stateUpdate = message.artifact?.state_update as Partial<typeof Phase3State.State> | undefined;
+    const stateUpdate = message.artifact?.state_update as Partial<typeof DocumentAgentGraph.State> | undefined;
     if (!stateUpdate) {
       continue;
     }
@@ -587,14 +587,14 @@ function mergeToolArtifacts(
   return update;
 }
 
-function continueAfterTools(state: typeof Phase3State.State): string {
+function continueAfterTools(state: typeof DocumentAgentGraph.State): string {
   if (state.mode === "template") {
     return shouldMaterialize(state) ? "materialize_and_reconcile" : END;
   }
   return "reasoning";
 }
 
-function shouldMaterialize(state: typeof Phase3State.State): boolean {
+function shouldMaterialize(state: typeof DocumentAgentGraph.State): boolean {
   for (let index = state.diagnostics.length - 1; index >= 0; index -= 1) {
     const entry = state.diagnostics[index];
     if (entry.stage === "materialize") {
@@ -607,7 +607,7 @@ function shouldMaterialize(state: typeof Phase3State.State): boolean {
   return false;
 }
 
-function buildReasoningMessages(state: typeof Phase3State.State): BaseMessage[] {
+function buildReasoningMessages(state: typeof DocumentAgentGraph.State): BaseMessage[] {
   if (!state.chat_projection) {
     return state.messages;
   }
@@ -626,7 +626,7 @@ function buildReasoningMessages(state: typeof Phase3State.State): BaseMessage[] 
   return state.messages.concat([new HumanMessage(`projection_context=${JSON.stringify(projectionSummary, null, 2)}`)]);
 }
 
-function toProjectionDiagnostic(projectionKind: string, error: unknown): Phase3AgentState["diagnostics"][number] {
+function toProjectionDiagnostic(projectionKind: string, error: unknown): AgentState["diagnostics"][number] {
   if (error instanceof AgentError) {
     return {
       stage: "projection_builder",
@@ -643,7 +643,7 @@ function toProjectionDiagnostic(projectionKind: string, error: unknown): Phase3A
   };
 }
 
-function toMaterializeDiagnostic(stage: "reconcile" | "materialize", error: unknown): Phase3AgentState["diagnostics"][number] {
+function toMaterializeDiagnostic(stage: "reconcile" | "materialize", error: unknown): AgentState["diagnostics"][number] {
   if (error instanceof AgentError) {
     return {
       stage,
@@ -658,7 +658,7 @@ function toMaterializeDiagnostic(stage: "reconcile" | "materialize", error: unkn
   };
 }
 
-function hasRequiredTemplateFields(paragraph: NonNullable<Phase3AgentState["template_projection"]>["paragraphs"][number]): boolean {
+function hasRequiredTemplateFields(paragraph: NonNullable<AgentState["template_projection"]>["paragraphs"][number]): boolean {
   return (
     typeof paragraph.paragraphId === "string" &&
     typeof paragraph.text === "string" &&
@@ -671,7 +671,7 @@ function hasRequiredTemplateFields(paragraph: NonNullable<Phase3AgentState["temp
   );
 }
 
-function classifyTemplateProjection(projection: NonNullable<Phase3AgentState["template_projection"]>): string[] {
+function classifyTemplateProjection(projection: NonNullable<AgentState["template_projection"]>): string[] {
   const tags = new Set<string>();
   const paragraphs = projection.batches.flatMap((batch) => batch.paragraphs);
   if (paragraphs.some((paragraph) => paragraph.bucketType === "heading" || paragraph.headingLevel !== undefined)) {
@@ -695,14 +695,14 @@ function classifyTemplateProjection(projection: NonNullable<Phase3AgentState["te
   return Array.from(tags);
 }
 
-function storeState(state: Phase3AgentState): Phase3StoredAgentState {
+function storeState(state: AgentState): StoredAgentState {
   return {
     ...state,
     messages: mapChatMessagesToStoredMessages(state.messages)
   };
 }
 
-function restoreStoredState(state: Phase3StoredAgentState | undefined): Phase3AgentState | undefined {
+function restoreStoredState(state: StoredAgentState | undefined): AgentState | undefined {
   if (!state) {
     return undefined;
   }
@@ -732,16 +732,16 @@ function extractReply(messages: BaseMessage[]): string {
   return "";
 }
 
-function extractModelDiagnostics(message: BaseMessage): Phase3AgentState["diagnostics"] {
+function extractModelDiagnostics(message: BaseMessage): AgentState["diagnostics"] {
   if (!(message instanceof AIMessage)) {
     return [];
   }
-  const diagnostics = message.additional_kwargs?.phase3_diagnostics;
+  const diagnostics = message.additional_kwargs?.runtime_diagnostics ?? message.additional_kwargs?.phase3_diagnostics;
   if (!Array.isArray(diagnostics)) {
     return [];
   }
   return diagnostics.filter(
-    (entry): entry is Phase3AgentState["diagnostics"][number] =>
+    (entry): entry is AgentState["diagnostics"][number] =>
       typeof entry === "object" && entry !== null && typeof (entry as { stage?: unknown }).stage === "string"
   );
 }

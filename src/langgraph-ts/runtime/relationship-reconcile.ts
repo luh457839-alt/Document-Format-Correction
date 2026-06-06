@@ -1,6 +1,6 @@
 import type { ParsedDocumentBundle, RelationshipEdge } from "../contracts/document-contracts.js";
 import { AgentError } from "../core/errors.js";
-import type { Phase3Diagnostic } from "./contracts.js";
+import type { RuntimeDiagnostic } from "./contracts.js";
 import {
   childElements,
   createContentTypesDocument,
@@ -35,7 +35,7 @@ interface RelationshipPartEntry {
 
 export function reconcileBundleRelationships(
   bundle: ParsedDocumentBundle
-): { bundle: ParsedDocumentBundle; diagnostics: Phase3Diagnostic[] } {
+): { bundle: ParsedDocumentBundle; diagnostics: RuntimeDiagnostic[] } {
   const nextBundle = structuredClone(bundle);
   const existing = readRelationshipEntries(nextBundle);
   const documentExisting = existing.get(DOCUMENT_REL_SOURCE) ?? [];

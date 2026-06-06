@@ -2,12 +2,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
 import type { ParsedDocumentBundle } from "../contracts/document-contracts.js";
-import type { Phase3ArtifactRef, Phase3Diagnostic } from "./contracts.js";
+import type { RuntimeArtifactRef, RuntimeDiagnostic } from "./contracts.js";
 
 export async function materializeBundle(
   bundle: ParsedDocumentBundle,
   outputPath: string
-): Promise<{ artifact: Phase3ArtifactRef; diagnostics: Phase3Diagnostic[] }> {
+): Promise<{ artifact: RuntimeArtifactRef; diagnostics: RuntimeDiagnostic[] }> {
   await mkdir(path.dirname(outputPath), { recursive: true });
   const zip = new JSZip();
   for (const part of Object.values(bundle.package_snapshot.parts)) {

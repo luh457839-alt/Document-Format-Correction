@@ -5,13 +5,13 @@ import path from "node:path";
 import JSZip from "jszip";
 import type { BaseMessage, AIMessage } from "@langchain/core/messages";
 import { parseDocumentBundle } from "../document-core/parse-document-bundle.js";
-import { tryCreatePhase3ModelFromConfig } from "../model/model-factory.js";
-import { runPhase3Graph } from "../runtime/graph.js";
+import { tryCreateRuntimeModelFromConfig } from "../model/model-factory.js";
+import { runDocumentAgentGraph } from "../runtime/graph.js";
 import type {
-  Phase3Checkpointer,
-  Phase3ModelAdapter,
-  Phase3RuntimeInput,
-  Phase3RuntimeDeps
+  RuntimeCheckpointer,
+  RuntimeModelAdapter,
+  RuntimeInput,
+  RuntimeDeps
 } from "../runtime/contracts.js";
 import type { ParsedDocumentBundle, RelationshipEdge } from "../contracts/document-contracts.js";
 import type { WriteToolInput } from "../tooling/contracts.js";
@@ -320,7 +320,7 @@ export function findRelationship(bundle: ParsedDocumentBundle, predicate: (edge:
   return match;
 }
 
-export class InMemoryCheckpointer implements Phase3Checkpointer {
+export class InMemoryCheckpointer implements RuntimeCheckpointer {
   private readonly state = new Map<string, unknown>();
 
   async load(threadId: string): Promise<unknown | undefined> {
@@ -343,7 +343,7 @@ type ModelStep =
       }>;
     };
 
-export class StaticModelAdapter implements Phase3ModelAdapter {
+export class StaticModelAdapter implements RuntimeModelAdapter {
   private readonly steps: ModelStep[];
   private index = 0;
 
@@ -351,7 +351,7 @@ export class StaticModelAdapter implements Phase3ModelAdapter {
     this.steps = steps;
   }
 
-  async invoke(_messages: BaseMessage[], _input: Phase3RuntimeInput): Promise<AIMessage> {
+  async invoke(_messages: BaseMessage[], _input: RuntimeInput): Promise<AIMessage> {
     const step = this.steps[this.index] ?? { type: "ai", text: "默认回复。" };
     this.index += 1;
     const { AIMessage } = await import("@langchain/core/messages");
@@ -377,11 +377,11 @@ export async function parseOutputDocx(outputPath: string, label = "reparsed"): P
 
 export async function runPhase3WithStaticModel(
   fixture: RealDocxFixture,
-  input: Omit<Phase3RuntimeInput, "document_path">,
+  input: Omit<RuntimeInput, "document_path">,
   steps: ModelStep[],
-  deps?: Partial<Phase3RuntimeDeps>
+  deps?: Partial<RuntimeDeps>
 ) {
-  return runPhase3Graph(
+  return runDocumentAgentGraph(
     {
       ...input,
       document_path: fixture.docxPath
@@ -395,13 +395,13 @@ export async function runPhase3WithStaticModel(
 
 export async function normalizeOpenAICompatibleWriteToolInputForSmoke(
   rawInput: unknown,
-  runtimeInput: Pick<Phase3RuntimeInput, "document_path">
+  runtimeInput: Pick<RuntimeInput, "document_path">
 ): Promise<WriteToolInput> {
   return normalizeProviderWriteToolInput(rawInput, runtimeInput);
 }
 
 export async function synthesizeSmokeWriteToolInputFromPrompt(
-  input: Pick<Phase3RuntimeInput, "document_path" | "user_message">
+  input: Pick<RuntimeInput, "document_path" | "user_message">
 ): Promise<WriteToolInput | undefined> {
   const textReplacement = extractQuotedText(input.user_message);
   if (/第一段正文/.test(input.user_message) && textReplacement) {
@@ -464,13 +464,13 @@ export async function synthesizeSmokeWriteToolInputFromPrompt(
 }
 
 export function createOpenAICompatibleModelFromEnv(): {
-  model: Phase3ModelAdapter;
+  model: RuntimeModelAdapter;
   reason?: undefined;
 } | {
   model?: undefined;
   reason: string;
 } {
-  return tryCreatePhase3ModelFromConfig("chat");
+  return tryCreateRuntimeModelFromConfig("chat");
 }
 
 async function parseBundleForSmoke(documentPath: string): Promise<ParsedDocumentBundle> {

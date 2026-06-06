@@ -11,7 +11,7 @@ import { createSemanticProjectionBundle } from "./semantic-fixtures.js";
 const tempDirs: string[] = [];
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "langgraph-phase1-parity-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "langgraph-bundle-parity-"));
   tempDirs.push(dir);
   return dir;
 }

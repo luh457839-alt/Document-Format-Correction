@@ -4,7 +4,7 @@
 
 `fixed-template-contract.sample.json` 现在是一份面向模板子系统 `2.0` 契约的 Patch DSL 示例。
 
-这份 sample 的外部接口边界以仓库根目录的《[接口与外部契约定义](../../接口与外部契约定义.md)》为准；本文只解释模板 JSON 本身怎么写，不定义前端任务结果或 Web API 返回 shape。
+这份 sample 的外部接口边界以《[工作区 API 与模板契约](../工作区API与模板契约.md)》为准；本文只解释模板 JSON 本身怎么写，不定义前端任务结果或 Web API 返回 shape。
 
 这份示例的目标有两个：
 

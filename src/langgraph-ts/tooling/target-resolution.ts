@@ -119,9 +119,26 @@ function analyzeSelectorTarget(
 function analyzeNodeTargets(bundle: ParsedDocumentBundle, nodeIds: string[]): SelectorTargetAnalysis {
   const normalizedNodeIds = unique(nodeIds.map((nodeId) => nodeId.trim()).filter(Boolean));
   const paragraphsByNodeId = buildParagraphByNodeIdIndex(bundle);
-  const targetNodeIds = normalizedNodeIds.filter((nodeId) => paragraphsByNodeId.has(nodeId));
+  const paragraphById = bundle.structure_index.paragraphMap;
+  const targetNodeIds = unique(
+    normalizedNodeIds.flatMap((nodeId) => {
+      if (paragraphsByNodeId.has(nodeId)) {
+        return [nodeId];
+      }
+      const paragraph = paragraphById[nodeId];
+      return paragraph?.runIds ?? [];
+    })
+  );
   const matchedParagraphIds = unique(
-    targetNodeIds.map((targetNodeId) => paragraphsByNodeId.get(targetNodeId)?.id).filter((value): value is string => Boolean(value))
+    normalizedNodeIds
+      .flatMap((nodeId) => {
+        if (paragraphsByNodeId.has(nodeId)) {
+          const paragraphId = paragraphsByNodeId.get(nodeId)?.id;
+          return paragraphId ? [paragraphId] : [];
+        }
+        const paragraph = paragraphById[nodeId];
+        return paragraph ? [paragraph.id] : [];
+      })
   );
 
   return {
@@ -132,7 +149,7 @@ function analyzeNodeTargets(bundle: ParsedDocumentBundle, nodeIds: string[]): Se
     patch_part_paths: unique(
       targetNodeIds.map((targetNodeId) => paragraphsByNodeId.get(targetNodeId)?.partPath ?? "word/document.xml")
     ),
-    missing_node_ids: normalizedNodeIds.filter((nodeId) => !paragraphsByNodeId.has(nodeId))
+    missing_node_ids: normalizedNodeIds.filter((nodeId) => !paragraphsByNodeId.has(nodeId) && !paragraphById[nodeId])
   };
 }
 

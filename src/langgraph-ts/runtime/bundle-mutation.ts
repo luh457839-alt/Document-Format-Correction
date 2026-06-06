@@ -319,11 +319,15 @@ function updateInlineStyleXml(xml: string, target: DocxPatchTarget, name: string
       setQualifiedAttribute(rFonts, "w:ascii", String(value ?? ""));
       setQualifiedAttribute(rFonts, "w:hAnsi", String(value ?? ""));
       setQualifiedAttribute(rFonts, "w:cs", String(value ?? ""));
+      setQualifiedAttribute(rFonts, "w:eastAsia", String(value ?? ""));
       break;
     }
     case "font_size_pt": {
+      const sizeValue = String(Math.round(Number(value ?? 0) * 2));
       const size = findDirectChild(runProps, "sz") ?? ensureChildElement(runProps, "w:sz");
-      setQualifiedAttribute(size, "w:val", String(Math.round(Number(value ?? 0) * 2)));
+      const sizeCs = findDirectChild(runProps, "szCs") ?? ensureChildElement(runProps, "w:szCs");
+      setQualifiedAttribute(size, "w:val", sizeValue);
+      setQualifiedAttribute(sizeCs, "w:val", sizeValue);
       break;
     }
     case "font_color": {

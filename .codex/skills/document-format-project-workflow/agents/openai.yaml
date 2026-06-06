@@ -1,0 +1,7 @@
+interface:
+  display_name: "项目施工工作流"
+  short_description: "记录本项目施工目标、实现结果和review问题留档"
+  default_prompt: "Use $document-format-project-workflow before implementation, review, or handoff work in this repository."
+
+policy:
+  allow_implicit_invocation: true
