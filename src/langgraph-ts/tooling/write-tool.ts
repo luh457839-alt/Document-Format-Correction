@@ -19,14 +19,14 @@ export function executeWriteTool(
   }
 
   const input = parsedInput as WriteToolInput;
-  const analysis = analyzeWriteTarget(bundle, input.target, input.payload);
-
   let normalizedPayload: Record<string, unknown>;
   try {
-    normalizedPayload = normalizeWriteToolPayload(input.operation, input.payload);
+    normalizedPayload = normalizeWriteToolPayload(input.operation, input.payload, input.target);
   } catch (error) {
     return toPayloadValidation(error);
   }
+
+  const analysis = analyzeWriteTarget(bundle, input.target, normalizedPayload);
 
   const targetValidation = validateTargetAnalysis(input, analysis);
   if (targetValidation) {
@@ -58,7 +58,7 @@ export function executeWriteTool(
     return {
       ok: true,
       executed: true,
-      summary: `Compiled ${compilation.patchSet.operations.length} patch operations for request '${input.request_id}'.`,
+      summary: `Compiled ${compilation.patchSet.operations.length} patch operations for ${input.operation} request '${input.request_id}'.`,
       idempotency_key: idempotencyKey,
       patch_target_ids: compilation.patchTargetIds,
       patch_part_paths: compilation.partPaths,

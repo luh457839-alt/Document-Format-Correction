@@ -5,7 +5,7 @@ import path from "node:path";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { writePhaseOneFixtureDocx } from "./test-fixtures.js";
 import {
-  PHASE3_STRONG_SYSTEM_PROMPT,
+  DOCUMENT_AGENT_SYSTEM_PROMPT,
   buildProviderWriteDocumentTool,
   convertToProviderWireMessages,
   createProviderModelAdapter,
@@ -13,7 +13,7 @@ import {
   type ProviderTransport,
   type ProviderTransportRequest
 } from "../model/provider-adapter.js";
-import type { Phase3RuntimeInput } from "../runtime/contracts.js";
+import type { RuntimeInput } from "../runtime/contracts.js";
 
 const tempDirs: string[] = [];
 
@@ -32,6 +32,13 @@ afterEach(async () => {
 });
 
 describe("provider model adapter", () => {
+  it("instructs the model to split independent edits into separate write_document calls", () => {
+    expect(DOCUMENT_AGENT_SYSTEM_PROMPT).toContain("多个独立修改必须拆成多个 write_document 调用");
+    expect(DOCUMENT_AGENT_SYSTEM_PROMPT).toContain("每个调用只做一个操作");
+    expect(buildProviderWriteDocumentTool().function.description).toContain("multiple independent edits");
+    expect(buildProviderWriteDocumentTool().function.description).toContain("one atomic write operation");
+  });
+
   it("binds a strict prompt and schema, and passes through standard write_document calls", async () => {
     const fixture = await createFixture();
     const transport = new RecordingTransport([
@@ -83,11 +90,68 @@ describe("provider model adapter", () => {
     });
 
     expect(transport.requests).toHaveLength(1);
-    expect(readSystemPrompt(transport.requests[0].messages)).toContain(PHASE3_STRONG_SYSTEM_PROMPT);
+    expect(readSystemPrompt(transport.requests[0].messages)).toContain(DOCUMENT_AGENT_SYSTEM_PROMPT);
     expect(transport.requests[0].tools).toHaveLength(1);
     expect(transport.requests[0].tools[0]).toEqual(buildProviderWriteDocumentTool());
     expect(JSON.stringify(transport.requests[0].tools[0])).toContain("title_like_paragraphs");
     expect(JSON.stringify(transport.requests[0].tools[0])).toContain("body_like_paragraphs");
+  });
+
+  it("emits provider trace diagnostics for tool calls when trace mode is enabled", async () => {
+    const originalTrace = process.env.RUNTIME_TRACE_DIAGNOSTICS;
+    process.env.RUNTIME_TRACE_DIAGNOSTICS = "1";
+    try {
+      const fixture = await createFixture();
+      const transport = new RecordingTransport([
+        new AIMessage({
+          content: "执行写入。",
+          tool_calls: [
+            {
+              id: "tool-trace-1",
+              name: "write_document",
+              args: {
+                request_id: "req-trace-1",
+                operation: "set_text",
+                target: {
+                  kind: "selector",
+                  selector: {
+                    scope: "body"
+                  }
+                },
+                payload: {
+                  value: "trace 写入"
+                }
+              }
+            }
+          ]
+        })
+      ]);
+      const adapter = createProviderModelAdapter(
+        { provider: "openai-compatible", baseUrl: "https://example.com/v1", model: "test-model" },
+        transport
+      );
+
+      const result = await adapter.invoke(buildMessages(), fixture.runtimeInput);
+
+      expect(result).toBeInstanceOf(AIMessage);
+      const aiResult = result as AIMessage;
+      expect(aiResult.additional_kwargs?.runtime_diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            provider_diagnostic_kind: "provider_tool_call_trace"
+          }),
+          expect.objectContaining({
+            provider_diagnostic_kind: "provider_tool_call_normalized"
+          })
+        ])
+      );
+    } finally {
+      if (originalTrace === undefined) {
+        delete process.env.RUNTIME_TRACE_DIAGNOSTICS;
+      } else {
+        process.env.RUNTIME_TRACE_DIAGNOSTICS = originalTrace;
+      }
+    }
   });
 
   it("normalizes provider-specific write args before returning them to runtime", async () => {
@@ -138,6 +202,179 @@ describe("provider model adapter", () => {
         value: "归一化后的正文"
       }
     });
+  });
+
+  it("normalizes standalone set_size and set_font_color provider args", async () => {
+    const fixture = await createFixture();
+    const transport = new RecordingTransport([
+      new AIMessage({
+        content: "调整字号和颜色。",
+        tool_calls: [
+          {
+            id: "tool-size",
+            name: "write_document",
+            args: {
+              request_id: "req-size",
+              operation: "set_size",
+              target: {
+                kind: "selector",
+                selector: {
+                  scope: "body"
+                }
+              },
+              payload: {
+                fontSizePt: 16
+              }
+            }
+          },
+          {
+            id: "tool-color",
+            name: "write_document",
+            args: {
+              request_id: "req-color",
+              operation: "set_font_color",
+              target: {
+                kind: "selector",
+                selector: {
+                  scope: "body"
+                }
+              },
+              payload: {
+                color: "#ff0000"
+              }
+            }
+          }
+        ]
+      })
+    ]);
+    const adapter = createProviderModelAdapter(
+      { provider: "openai-compatible", baseUrl: "https://example.com/v1", model: "test-model" },
+      transport
+    );
+
+    const result = await adapter.invoke(buildMessages(), fixture.runtimeInput);
+
+    expect(result).toBeInstanceOf(AIMessage);
+    const aiResult = result as AIMessage;
+    expect(aiResult.tool_calls).toHaveLength(2);
+    expect(aiResult.tool_calls?.[0]?.args).toEqual({
+      request_id: "req-size",
+      operation: "set_size",
+      target: {
+        kind: "selector",
+        selector: {
+          scope: "body"
+        }
+      },
+      payload: {
+        font_size_pt: 16
+      }
+    });
+    expect(aiResult.tool_calls?.[1]?.args).toEqual({
+      request_id: "req-color",
+      operation: "set_font_color",
+      target: {
+        kind: "selector",
+        selector: {
+          scope: "body"
+        }
+      },
+      payload: {
+        font_color: "FF0000"
+      }
+    });
+  });
+
+  it("rejects plain set_font payloads without font_name", async () => {
+    const fixture = await createFixture();
+    const transport = new RecordingTransport([
+      new AIMessage({
+        content: "缺少字体名。",
+        tool_calls: [
+          {
+            id: "tool-font",
+            name: "write_document",
+            args: {
+              request_id: "req-font",
+              operation: "set_font",
+              target: {
+                kind: "selector",
+                selector: {
+                  scope: "body"
+                }
+              },
+              payload: {
+                baseline_from_semantic: "body_like_paragraphs",
+                sync_fields: ["font_name"]
+              }
+            }
+          }
+        ]
+      })
+    ]);
+    const adapter = createProviderModelAdapter(
+      { provider: "openai-compatible", baseUrl: "https://example.com/v1", model: "test-model" },
+      transport
+    );
+
+    const result = await adapter.invoke(buildMessages(), fixture.runtimeInput);
+
+    expect(result).toBeInstanceOf(AIMessage);
+    const aiResult = result as AIMessage;
+    expect(aiResult.tool_calls ?? []).toHaveLength(0);
+    expect(aiResult.content).toContain("provider_tool_args_invalid");
+    expect(aiResult.additional_kwargs?.runtime_diagnostics).toEqual([
+      expect.objectContaining({
+        stage: "provider_adapter",
+        provider_diagnostic_kind: "provider_tool_args_invalid",
+        tool_validation_stage: "payload",
+        tool_validation_error_code: "E_INVALID_OPERATION_PAYLOAD"
+      })
+    ]);
+  });
+
+  it("preserves invalid provider targets as structured target failures", async () => {
+    const fixture = await createFixture();
+    const transport = new RecordingTransport([
+      new AIMessage({
+        content: "目标无效。",
+        tool_calls: [
+          {
+            id: "tool-target",
+            name: "write_document",
+            args: {
+              request_id: "req-target",
+              operation: "set_text",
+              target: {
+                kind: "bad_target"
+              },
+              payload: {
+                content: "无效目标"
+              }
+            }
+          }
+        ]
+      })
+    ]);
+    const adapter = createProviderModelAdapter(
+      { provider: "openai-compatible", baseUrl: "https://example.com/v1", model: "test-model" },
+      transport
+    );
+
+    const result = await adapter.invoke(buildMessages(), fixture.runtimeInput);
+
+    expect(result).toBeInstanceOf(AIMessage);
+    const aiResult = result as AIMessage;
+    expect(aiResult.tool_calls ?? []).toHaveLength(0);
+    expect(aiResult.content).toContain("provider_tool_args_invalid");
+    expect(aiResult.additional_kwargs?.runtime_diagnostics).toEqual([
+      expect.objectContaining({
+        stage: "provider_adapter",
+        provider_diagnostic_kind: "provider_tool_args_invalid",
+        tool_validation_stage: "target",
+        tool_validation_error_code: "E_TOOL_INPUT_INVALID"
+      })
+    ]);
   });
 
   it("handles an internal read -> write loop without exposing read to runtime", async () => {
@@ -312,7 +549,7 @@ describe("provider model adapter", () => {
   it("serializes reasoning_content back into provider wire messages for DeepSeek-style replay", () => {
     const wireMessages = convertToProviderWireMessages(
       [
-        new SystemMessage(PHASE3_STRONG_SYSTEM_PROMPT),
+        new SystemMessage(DOCUMENT_AGENT_SYSTEM_PROMPT),
         new HumanMessage("请先读取第一段再修改"),
         new AIMessage({
           content: "先读取。",
@@ -361,7 +598,7 @@ describe("provider model adapter", () => {
   it("serializes tool messages for provider wire replay after internal read", () => {
     const wireMessages = convertToProviderWireMessages(
       [
-        new SystemMessage(PHASE3_STRONG_SYSTEM_PROMPT),
+        new SystemMessage(DOCUMENT_AGENT_SYSTEM_PROMPT),
         new HumanMessage("请先读取第一段再修改"),
         new AIMessage({
           content: "先读取。",
@@ -423,7 +660,7 @@ describe("provider model adapter", () => {
     const aiResult = result as AIMessage;
     expect(aiResult.tool_calls ?? []).toHaveLength(0);
     expect(aiResult.content).toContain("provider_read_loop_exhausted");
-    expect(aiResult.additional_kwargs?.phase3_diagnostics).toEqual([
+    expect(aiResult.additional_kwargs?.runtime_diagnostics).toEqual([
       expect.objectContaining({
         stage: "provider_adapter",
         provider: "deepseek",
@@ -483,13 +720,13 @@ function readSystemPrompt(messages: BaseMessage[]): string {
 }
 
 async function createFixture(): Promise<{
-  runtimeInput: Phase3RuntimeInput;
+  runtimeInput: RuntimeInput;
   firstBodyParagraphId: string;
 }> {
   const dir = await makeTempDir();
   const docxPath = path.join(dir, "sample.docx");
   await writePhaseOneFixtureDocx(docxPath);
-  const runtimeInput: Phase3RuntimeInput = {
+  const runtimeInput: RuntimeInput = {
     thread_id: "provider-adapter-test",
     document_path: docxPath,
     user_message: "把第一段正文改掉",

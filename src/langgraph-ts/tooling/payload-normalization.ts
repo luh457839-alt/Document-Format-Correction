@@ -1,5 +1,6 @@
 import { AgentError } from "../core/errors.js";
 import type { OperationType } from "../core/types.js";
+import type { WriteTargetSpec } from "./contracts.js";
 
 const highlightColorAliases: Record<string, string> = {
   yellow: "yellow",
@@ -50,14 +51,21 @@ const highlightColorAliases: Record<string, string> = {
   none: "none"
 };
 
-export function normalizeWriteToolPayload(operation: OperationType, payload: Record<string, unknown>): Record<string, unknown> {
+export function normalizeWriteToolPayload(
+  operation: OperationType,
+  payload: Record<string, unknown>,
+  target?: WriteTargetSpec
+): Record<string, unknown> {
   switch (operation) {
     case "set_font": {
+      if (target?.kind === "semantic_selector" && isSemanticAlignmentPayload(payload)) {
+        return payload;
+      }
       const fontName = pickNonEmptyString(payload.font_name, payload.fontName);
-      if (!fontName && !isSemanticAlignmentPayload(payload)) {
+      if (!fontName) {
         throw invalidPayload(operation, "set_font requires font_name");
       }
-      return fontName ? { font_name: fontName } : payload;
+      return { font_name: fontName };
     }
     case "set_size": {
       const fontSize = pickPositiveNumber(payload.font_size_pt, payload.fontSizePt, payload.fontSize);
@@ -81,7 +89,7 @@ export function normalizeWriteToolPayload(operation: OperationType, payload: Rec
       return alignment ? { paragraph_alignment: alignment } : payload;
     }
     case "set_font_color": {
-      const color = pickHexColor(payload.font_color, payload.fontColor);
+      const color = pickHexColor(payload.font_color, payload.fontColor, payload.color);
       if (!color) {
         throw invalidPayload(operation, "set_font_color requires font_color");
       }

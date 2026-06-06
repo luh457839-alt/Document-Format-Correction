@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { ChatOpenAI } from "@langchain/openai";
-import type { Phase3ModelAdapter } from "../runtime/contracts.js";
+import type { RuntimeModelAdapter } from "../runtime/contracts.js";
 import { createChatOpenAITransport, createProviderModelAdapter, inferProviderName } from "./provider-adapter.js";
 
 type ModelConfigKey = "chat" | "planner";
@@ -18,10 +18,10 @@ interface RawConfigFile {
   planner?: RawModelConfig;
 }
 
-export function createPhase3ModelFromConfig(
+export function createRuntimeModelFromConfig(
   key: ModelConfigKey = "chat",
   configPath = resolveDefaultConfigPath()
-): Phase3ModelAdapter {
+): RuntimeModelAdapter {
   const config = readModelConfig(configPath, key);
   const llm = new ChatOpenAI({
     apiKey: config.api_key,
@@ -42,12 +42,12 @@ export function createPhase3ModelFromConfig(
   );
 }
 
-export function tryCreatePhase3ModelFromConfig(
+export function tryCreateRuntimeModelFromConfig(
   key: ModelConfigKey = "chat",
   configPath = resolveDefaultConfigPath()
-): { model: Phase3ModelAdapter } | { reason: string } {
+): { model: RuntimeModelAdapter } | { reason: string } {
   try {
-    return { model: createPhase3ModelFromConfig(key, configPath) };
+    return { model: createRuntimeModelFromConfig(key, configPath) };
   } catch (error) {
     return {
       reason: `无法从配置加载真实模型，跳过真实模型冒烟：${error instanceof Error ? error.message : String(error)}`

@@ -9,11 +9,12 @@ import {
 import { getEndpoint } from "@langchain/openai";
 import { parseDocumentBundle } from "../document-core/parse-document-bundle.js";
 import type { ParsedDocumentBundle } from "../contracts/document-contracts.js";
+import { AgentError } from "../core/errors.js";
 import type { OperationType } from "../core/types.js";
 import { buildChatProjection } from "../projections/build-chat-projection.js";
 import { buildTemplateProjection } from "../projections/build-template-projection.js";
-import type { Phase3Diagnostic, Phase3ModelAdapter, Phase3RuntimeInput } from "../runtime/contracts.js";
-import type { WriteToolInput } from "../tooling/contracts.js";
+import type { RuntimeDiagnostic, RuntimeModelAdapter, RuntimeInput } from "../runtime/contracts.js";
+import type { ToolValidationMessage, WriteToolInput } from "../tooling/contracts.js";
 import { normalizeWriteToolPayload } from "../tooling/payload-normalization.js";
 import { parseWriteToolInput } from "../tooling/schema.js";
 
@@ -49,10 +50,12 @@ const writeToolOperations = [
 
 const providerOperationValues = ["read", ...writeToolOperations] as const;
 
-export const PHASE3_STRONG_SYSTEM_PROMPT = [
+export const DOCUMENT_AGENT_SYSTEM_PROMPT = [
   "你是文档格式修复助手。",
   "你只能使用 write_document 工具，不得输出自由文本形式的修改指令。",
   "优先一次性直接输出最终 write_document。",
+  "多个独立修改必须拆成多个 write_document 调用，每个调用只做一个操作。",
+  "标题、正文、页眉、页脚属于不同独立修改，必须分别拆开。",
   "只有在信息不足、必须先查看文档结构时，才允许先发起 operation=read。",
   "最终写入必须严格遵守 WriteToolInput：request_id、operation、target、payload。",
   "semantic_selector 只允许 semantic_heading、title_like_paragraphs 或 body_like_paragraphs。",
@@ -70,7 +73,7 @@ export interface ProviderAdapterConfig {
 
 export interface ProviderTransportRequest {
   config: ProviderAdapterConfig;
-  input: Phase3RuntimeInput;
+  input: RuntimeInput;
   messages: BaseMessage[];
   tools: ProviderToolDefinition[];
   toolChoice: "auto";
@@ -78,6 +81,21 @@ export interface ProviderTransportRequest {
 
 export interface ProviderTransport {
   invoke(request: ProviderTransportRequest): Promise<AIMessage>;
+}
+
+class ProviderToolInputValidationError extends Error {
+  constructor(
+    public readonly stage: ToolValidationMessage["stage"],
+    public readonly errorCode: string,
+    message: string
+  ) {
+    super(message);
+    this.name = "ProviderToolInputValidationError";
+  }
+}
+
+function shouldEmitProviderTraceDiagnostics(): boolean {
+  return process.env.RUNTIME_TRACE_DIAGNOSTICS === "1" || process.env.REAL_MODEL_DEBUG === "1";
 }
 
 interface ProviderToolDefinition {
@@ -93,7 +111,7 @@ interface ProviderToolDefinition {
 export function createProviderModelAdapter(
   config: ProviderAdapterConfig,
   transport: ProviderTransport
-): Phase3ModelAdapter {
+): RuntimeModelAdapter {
   return {
     async invoke(messages, input) {
       const loadBundle = createBundleLoader(input.document_path);
@@ -101,6 +119,7 @@ export function createProviderModelAdapter(
       const maxInternalTurns = config.maxInternalTurns ?? 3;
       let workingMessages = withStrongSystemPrompt(messages);
       let latestReasoningContent: string | undefined;
+      const traceDiagnostics: RuntimeDiagnostic[] = [];
 
       for (let turn = 0; turn < maxInternalTurns; turn += 1) {
         let remoteMessage: AIMessage;
@@ -116,7 +135,9 @@ export function createProviderModelAdapter(
           return buildProviderFailureMessage(
             config,
             "provider_protocol_error",
-            `provider invocation failed: ${error instanceof Error ? error.message : String(error)}`
+            `provider invocation failed: ${error instanceof Error ? error.message : String(error)}`,
+            {},
+            traceDiagnostics
           );
         }
 
@@ -130,20 +151,33 @@ export function createProviderModelAdapter(
           return remoteMessage;
         }
 
+        if (shouldEmitProviderTraceDiagnostics()) {
+          traceDiagnostics.push(
+            buildProviderTraceDiagnostic(config, "provider_tool_call_trace", "provider emitted tool calls", {
+              provider_tool_call_count: toolCalls.length,
+              provider_tool_calls_raw: structuredClone(toolCalls)
+            })
+          );
+        }
+
         const readToolCalls = toolCalls.filter((toolCall) => isProviderReadOperation(toolCall.args));
         if (readToolCalls.length > 0) {
           if (readToolCalls.length !== toolCalls.length || readToolCalls.length !== 1) {
             return buildProviderFailureMessage(
               config,
               "provider_protocol_error",
-              "provider returned an unsupported mix of read and write tool calls"
+              "provider returned an unsupported mix of read and write tool calls",
+              {},
+              traceDiagnostics
             );
           }
           if (config.supportsReasoningContextReplay && !latestReasoningContent) {
             return buildProviderFailureMessage(
               config,
               "provider_reasoning_context_missing",
-              "provider adapter expected reasoning_content before replaying the next internal turn"
+              "provider adapter expected reasoning_content before replaying the next internal turn",
+              {},
+              traceDiagnostics
             );
           }
 
@@ -154,7 +188,9 @@ export function createProviderModelAdapter(
             return buildProviderFailureMessage(
               config,
               "provider_protocol_error",
-              `provider read tool failed: ${error instanceof Error ? error.message : String(error)}`
+              `provider read tool failed: ${error instanceof Error ? error.message : String(error)}`,
+              {},
+              traceDiagnostics
             );
           }
 
@@ -181,18 +217,44 @@ export function createProviderModelAdapter(
               };
             })
           );
+          if (shouldEmitProviderTraceDiagnostics()) {
+            traceDiagnostics.push(
+              buildProviderTraceDiagnostic(config, "provider_tool_call_normalized", "provider normalized write_document tool calls", {
+                provider_tool_call_count: normalizedToolCalls.length,
+                provider_tool_calls_raw: structuredClone(toolCalls),
+                provider_tool_calls_normalized: structuredClone(normalizedToolCalls)
+              })
+            );
+          }
           return new AIMessage({
             content: remoteMessage.content,
             tool_calls: normalizedToolCalls,
-            additional_kwargs: remoteMessage.additional_kwargs,
+            additional_kwargs: {
+              ...remoteMessage.additional_kwargs,
+              ...(traceDiagnostics.length > 0 ? { runtime_diagnostics: traceDiagnostics, phase3_diagnostics: traceDiagnostics } : {})
+            },
             response_metadata: remoteMessage.response_metadata,
             id: remoteMessage.id
           });
         } catch (error) {
+          if (error instanceof ProviderToolInputValidationError) {
+            return buildProviderFailureMessage(
+              config,
+              "provider_tool_args_invalid",
+              error.message,
+              {
+                tool_validation_stage: error.stage,
+                tool_validation_error_code: error.errorCode
+              },
+              traceDiagnostics
+            );
+          }
           return buildProviderFailureMessage(
             config,
             "provider_tool_args_unmappable",
-            error instanceof Error ? error.message : String(error)
+            error instanceof Error ? error.message : String(error),
+            {},
+            traceDiagnostics
           );
         }
       }
@@ -200,7 +262,9 @@ export function createProviderModelAdapter(
       return buildProviderFailureMessage(
         config,
         "provider_read_loop_exhausted",
-        `provider did not return an executable write_document within ${maxInternalTurns} internal turns`
+        `provider did not return an executable write_document within ${maxInternalTurns} internal turns`,
+        {},
+        traceDiagnostics
       );
     }
   };
@@ -255,7 +319,8 @@ export function buildProviderWriteDocumentTool(): ProviderToolDefinition {
     type: "function",
     function: {
       name: "write_document",
-      description: "Read document structure when required, then return a final validated document write request.",
+      description:
+        "Read document structure when required, then return one atomic write operation. Use multiple write_document calls for multiple independent edits.",
       strict: true,
       parameters: {
         type: "object",
@@ -375,6 +440,24 @@ export function buildProviderWriteDocumentTool(): ProviderToolDefinition {
                 type: "object",
                 additionalProperties: false,
                 properties: {
+                  font_size_pt: { type: "number", exclusiveMinimum: 0 },
+                  fontSizePt: { type: "number", exclusiveMinimum: 0 },
+                  fontSize: { type: "number", exclusiveMinimum: 0 }
+                }
+              },
+              {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  font_color: { type: "string", minLength: 1 },
+                  fontColor: { type: "string", minLength: 1 },
+                  color: { type: "string", minLength: 1 }
+                }
+              },
+              {
+                type: "object",
+                additionalProperties: false,
+                properties: {
                   paragraph_alignment: { type: "string", minLength: 1 },
                   alignment: { type: "string", minLength: 1 }
                 }
@@ -435,25 +518,26 @@ export function buildProviderWriteDocumentTool(): ProviderToolDefinition {
 
 export async function normalizeProviderWriteToolInput(
   rawInput: unknown,
-  runtimeInput: Pick<Phase3RuntimeInput, "document_path">,
+  runtimeInput: Pick<RuntimeInput, "document_path">,
   loadBundle?: () => Promise<ParsedDocumentBundle>
 ): Promise<WriteToolInput> {
-  const parsed = parseWriteToolInput(rawInput);
-  if (!("ok" in parsed)) {
-    return parsed;
-  }
-
   const bundleLoader = loadBundle ?? createBundleLoader(runtimeInput.document_path);
   const source = asRecord(rawInput);
   const operation = normalizeProviderOperation(source.operation);
   if (operation === "read") {
     throw new Error("read is an internal provider-only operation and cannot be returned to runtime");
   }
+  const aliasedPayload = mapProviderPayloadAliases(operation, asRecord(source.payload));
   const normalizedTarget = await normalizeProviderTarget(operation, source.target, bundleLoader);
-  const normalizedPayload = normalizeWriteToolPayload(
-    operation,
-    mapProviderPayloadAliases(operation, asRecord(source.payload))
-  );
+  let normalizedPayload: Record<string, unknown>;
+  try {
+    normalizedPayload = normalizeWriteToolPayload(operation, aliasedPayload, normalizedTarget);
+  } catch (error) {
+    if (error instanceof AgentError) {
+      throw new ProviderToolInputValidationError("payload", error.code, error.message);
+    }
+    throw error;
+  }
   const candidate: WriteToolInput = {
     request_id: readNonEmptyString(source.request_id) ?? `provider-${operation}`,
     operation,
@@ -463,7 +547,7 @@ export async function normalizeProviderWriteToolInput(
   };
   const validated = parseWriteToolInput(candidate);
   if ("ok" in validated) {
-    throw new Error(validated.message);
+    throw new ProviderToolInputValidationError(validated.stage, validated.error_code, validated.message);
   }
   return validated;
 }
@@ -487,7 +571,7 @@ export function inferProviderName(baseUrl: string, model: string): string {
 async function buildProviderReadToolResult(
   rawInput: unknown,
   loadBundle: () => Promise<ParsedDocumentBundle>,
-  runtimeInput: Phase3RuntimeInput
+  runtimeInput: RuntimeInput
 ): Promise<Record<string, unknown>> {
   const bundle = await loadBundle();
   const target = asRecord(asRecord(rawInput).target);
@@ -574,28 +658,49 @@ function safeBuildProjection<T>(builder: () => T): T | { error: string } {
 
 function buildProviderFailureMessage(
   config: ProviderAdapterConfig,
-  kind: NonNullable<Phase3Diagnostic["provider_diagnostic_kind"]>,
-  message: string
+  kind: NonNullable<RuntimeDiagnostic["provider_diagnostic_kind"]>,
+  message: string,
+  details: Record<string, unknown> = {},
+  traceDiagnostics: RuntimeDiagnostic[] = []
 ): AIMessage {
-  const diagnostic: Phase3Diagnostic = {
+  const diagnostic: RuntimeDiagnostic = {
     stage: "provider_adapter",
     provider: config.provider,
     provider_model: config.model,
     provider_base_url: config.baseUrl,
     provider_diagnostic_kind: kind,
-    message
+    message,
+    ...details
   };
   return new AIMessage({
     content: `${kind}: ${message}`,
     additional_kwargs: {
-      phase3_diagnostics: [diagnostic]
+      runtime_diagnostics: traceDiagnostics.concat([diagnostic]),
+      phase3_diagnostics: traceDiagnostics.concat([diagnostic])
     }
   });
 }
 
+function buildProviderTraceDiagnostic(
+  config: ProviderAdapterConfig,
+  kind: "provider_tool_call_trace" | "provider_tool_call_normalized",
+  message: string,
+  details: Record<string, unknown>
+): RuntimeDiagnostic {
+  return {
+    stage: "provider_adapter",
+    provider: config.provider,
+    provider_model: config.model,
+    provider_base_url: config.baseUrl,
+    provider_diagnostic_kind: kind,
+    message,
+    ...details
+  };
+}
+
 function withStrongSystemPrompt(messages: BaseMessage[]): BaseMessage[] {
   const nonSystemMessages = messages.filter((message) => !(message instanceof SystemMessage));
-  return [new SystemMessage(PHASE3_STRONG_SYSTEM_PROMPT), ...nonSystemMessages];
+  return [new SystemMessage(DOCUMENT_AGENT_SYSTEM_PROMPT), ...nonSystemMessages];
 }
 
 function appendAssistantMessageForReplay(
@@ -692,7 +797,7 @@ function createBundleLoader(documentPath: string): () => Promise<ParsedDocumentB
   return async () => {
     pending ??= parseDocumentBundle({
       docxPath: documentPath,
-      mediaDir: path.join(path.dirname(documentPath), ".phase3-provider-media")
+      mediaDir: path.join(path.dirname(documentPath), ".runtime-provider-media")
     });
     return pending;
   };
@@ -722,6 +827,14 @@ function mapProviderPayloadAliases(operation: OperationType, payload: Record<str
     case "set_font":
       return {
         font_name: payload.font_name ?? payload.fontName ?? payload.font
+      };
+    case "set_size":
+      return {
+        font_size_pt: payload.font_size_pt ?? payload.fontSizePt ?? payload.fontSize
+      };
+    case "set_font_color":
+      return {
+        font_color: payload.font_color ?? payload.fontColor ?? payload.color
       };
     case "set_alignment":
       return {
@@ -821,20 +934,11 @@ async function normalizeProviderTarget(
     };
   }
 
-  if (operation === "set_page_layout") {
-    return {
-      kind: "patch_targets",
-      patch_target_ids: ["target:document:section:0"],
-      patch_part_paths: ["word/document.xml"]
-    };
-  }
-
-  return {
-    kind: "selector",
-    selector: {
-      scope: "body"
-    }
-  };
+  throw new ProviderToolInputValidationError(
+    "target",
+    "E_TOOL_INPUT_INVALID",
+    `unsupported provider target '${String(rawTarget)}'`
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

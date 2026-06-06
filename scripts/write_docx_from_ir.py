@@ -107,6 +107,17 @@ def _set_font_name(run: Run, font_name: str) -> None:
         r_fonts.set(qn(attr), font_name)
 
 
+def _set_font_size(run: Run, font_size_pt: float) -> None:
+    run.font.size = Pt(font_size_pt)
+    r_pr = run._element.get_or_add_rPr()
+    size_value = str(round(font_size_pt * 2))
+    sz_cs = r_pr.find(qn("w:szCs"))
+    if sz_cs is None:
+        sz_cs = OxmlElement("w:szCs")
+        r_pr.append(sz_cs)
+    sz_cs.set(qn("w:val"), size_value)
+
+
 def _normalize_highlight_color(raw: Any) -> WD_COLOR_INDEX | None | object:
     if not isinstance(raw, str):
         return _MISSING
@@ -151,7 +162,7 @@ def _apply_style(run: Run, paragraph: Paragraph, style: dict[str, Any] | None) -
 
     font_size = style.get("font_size_pt")
     if isinstance(font_size, (int, float)) and float(font_size) > 0:
-        run.font.size = Pt(float(font_size))
+        _set_font_size(run, float(font_size))
 
     line_spacing = _normalize_line_spacing(style.get("line_spacing"))
     if isinstance(line_spacing, dict):

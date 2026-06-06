@@ -6,13 +6,14 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
+# Bootstrap archive modules before importing from _host.*
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bootstrap import PROJECT_ROOT, load_all
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+load_all()
 
-from src.python.core.model_config import load_model_config
-from src.python.core.project_paths import CONFIG_PATH, FRONTEND_DIST_DIR, TS_ROOT
+from _host.core.model_config import load_model_config
+from _host.core.project_paths import CONFIG_PATH, FRONTEND_DIST_DIR, TS_ROOT
 
 
 class LaunchCheckError(RuntimeError):

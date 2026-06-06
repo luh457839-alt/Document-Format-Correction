@@ -37,7 +37,11 @@ export function compileWriteToolPatchSet(
   input: WriteToolInput,
   analysis: SelectorTargetAnalysis
 ): PatchCompilationResult {
-  const normalizedPayload = normalizeSemanticPayload(input, analysis, normalizeWriteToolPayload(input.operation, input.payload));
+  const normalizedPayload = normalizeSemanticPayload(
+    input,
+    analysis,
+    normalizeWriteToolPayload(input.operation, input.payload, input.target)
+  );
   if (input.operation === "merge_paragraph" || input.operation === "split_paragraph") {
     throw patchCompileError(`Operation '${input.operation}' cannot be compiled into a stable XML patch set.`);
   }

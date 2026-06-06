@@ -11,7 +11,7 @@ import { createProjectionBudgetStressBundle, createSemanticProjectionBundle } fr
 const tempDirs: string[] = [];
 
 async function makeTempDir(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "langgraph-phase1-proj-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "langgraph-bundle-proj-"));
   tempDirs.push(dir);
   return dir;
 }
